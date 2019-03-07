@@ -1,0 +1,47 @@
+Python 2
+========
+
+Python scientific
+=================
+sudo dnf install numpy scipy python-matplotlib ipython python-pandas sympy python-nose atlas-devel
+
+netCDF
+======
+yum install netcdf
+pip install netCDF4
+
+GDAL 2.2.1+
+===========
+dnf install gdal-devel
+
+OR
+
+dnf install redhat-rpm-config
+Build from source:
+./configure --with-python --without-jasper --with-netcdf=/usr/local
+make
+su
+make install
+exit
+
+FOR MAC:
+brew tap osgeo/osgeo4mac
+brew install gdal
+brew install gdal2-python
+
+GDAL VERSION AND GDAL PYTHON VERSION MUST MATCH
+
+add to .bashrc:
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
+
+Basemap
+=======
+dnf install proj
+dnf install geos
+
+pip install pyshp
+
+MAC OS:
+export GEOS_DIR=/Library/Frameworks/GEOS.framework/unix/
+cd basemap.X.X.X
+python setup.py install

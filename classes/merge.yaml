@@ -1,0 +1,31 @@
+!OpSequence
+idstr: merge
+name: Merge
+doc: Merges rasters and reduces the resolution to a workable level
+input:
+  input-list: input-list
+  resolution: resolution
+  algorithm: algorithm
+  bbox: bbox
+tree:
+  - label: merge
+    operation: merge
+    in:
+      raster-list: input-list
+    out:
+      merged: merged
+  - label: agg
+    operation: agg
+    in:
+      input-ds: merged
+      resolution: resolution
+      algorithm: algorithm
+      bbox: bbox
+    out:
+      low-res: aggregated 
+out:
+  - low-res
+    
+    
+    
+

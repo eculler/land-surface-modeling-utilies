@@ -1,0 +1,27 @@
+!OpSequence
+idstr: align
+name: Align
+doc: Merges rasters, e.g. elevation files from the National Map, reduces the res  olution, and crops the raster to a reasonable distance outside the boundary
+input:
+  input: input
+  grid-res: grid-res
+  res: res
+  bbox: bbox
+  algorithm: algorithm
+tree:
+  - label: scaled-raster
+    operation: agg
+    in:
+      input-ds: input
+      bbox: bbox
+      resolution: res
+      grid-res: grid-res
+      algorithm: algorithm
+    out:
+      scaled-raster: aggregated
+out:
+  - scaled-raster
+    
+    
+    
+
