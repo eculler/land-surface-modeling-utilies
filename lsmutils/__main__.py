@@ -1,19 +1,17 @@
-import pkg_resources
-import yaml
+import sys
 import argparse
-from sequence import *
-from run_cases import *
+import logging
+import yaml
+
+from .sequence import run_cfg
 
 if __name__=='__main__':
-    parser = argparse.ArgumentParser(description='Prepare and run some models')
-    
-    gdal.UseExceptions()
-    # Clear and create directory for result files
-    temp_path = TempPath('', **cfg)
-    if os.path.exists(temp_path.dirname):
-        shutil.rmtree(temp_path.dirname)
+    parser = argparse.ArgumentParser(
+            description='Run modeling utilities as configured')
+    parser.add_argument('cfg_path')
+    args = parser.parse_args()
 
-    # Generate case configurations for 
-    collection = CaseCollection(config)
-    cases = collection.cases
-    case = cases[0]
+    cfg = yaml.load(open(args.cfg_path, 'r').read())
+    logging.basicConfig(stream=sys.stdout, level=cfg['log_level'])
+    logging.info('Running configuration file: %s', args.cfg_path)
+    run_cfg(cfg)

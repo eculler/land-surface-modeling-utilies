@@ -24,4 +24,6 @@ tree:
     out:
       flow-accumulation: flow-accumulation
 out:
+  - no-sinks
+  - flow-direction
   - flow-accumulation

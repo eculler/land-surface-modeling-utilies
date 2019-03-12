@@ -1,11 +1,11 @@
-from netCDF4 import Dataset
+import netCDF4 as nc4
 import logging
 import datetime
 import yaml
 import numpy as np
 
 def write_netcdf(out_uri, var_dict, fill=-99):
-    ncfile = Dataset(out_uri, 'w', format='NETCDF4_CLASSIC')
+    ncfile = nc4.Dataset(out_uri, 'w', format='NETCDF4_CLASSIC')
     ncfile.history = 'Created using rvic_prep.py {}'.format(
             datetime.datetime.now())
     

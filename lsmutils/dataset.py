@@ -1,19 +1,43 @@
-# Import GDAL
-#import mpl_toolkits.basemap as bm
 from osgeo import gdal, gdal_array, ogr, osr
 import numpy as np
+import pandas as pd
+
+#import mpl_toolkits.basemap as bm
 #import matplotlib.pyplot as plt
 #import matplotlib.colors as colors
 #import matplotlib.patches as patches
+
 import logging
 from math import ceil, floor
 
-base_uri = r'/media/c/Users/Elsa/Documents/sediment_x'
-shp_bm_uri = base_uri + r"/ShapeFile/OR_wgs84"
-
-from utils import CoordProperty
+from .utils import CoordProperty
 
 class Dataset(object):
+
+    def __init__(self, filepath):
+        self.filepath = filepath
+
+class DataFrameDataset(Dataset):
+
+    def __init__(self, filepath, filetype='csv', **kwargs):
+        self.filepath = filepath
+        self.filetype = filetype
+        self.csvargs = kwargs
+        self._dataset = None
+        
+    @property
+    def dataset(self):
+        if self._dataset == None:
+            self._dataset = pd.read_csv(self.filepath.path, **self.csvargs)
+        return self._dataset
+
+    def save(self):
+        self.saveas('csv')
+        
+    def saveas(self, filetype, datatype=None):
+        self.dataset.to_csv(self.filepath.ext[filetype], **csvargs)
+
+class SpatialDataset():
     
     def __init__(self, ds_min, ds_max, padding=None):
         
@@ -75,8 +99,9 @@ class Dataset(object):
             self._rev_warp_output_bounds = [self.cmin.x, self.cmin.y,
                                             self.cmax.x, self.cmax.y]
         return self._rev_warp_output_bounds
+
     
-class GDALDataset(Dataset):
+class GDALDataset(SpatialDataset):
 
     filetypes = {
         'nc': 'netCDF',
@@ -115,7 +140,7 @@ class GDALDataset(Dataset):
         self.mod = gdal.GA_ReadOnly
         if template:
             driver = gdal.GetDriverByName('GTiff')
-            self._dataset = driver.CreateCopy(filepath.gtif, template.dataset)
+            self._dataset = driver.CreateCopy(filepath.path, template.dataset)
         
     @property
     def dataset(self):
@@ -123,10 +148,10 @@ class GDALDataset(Dataset):
             if not hasattr(self.filepath, 'file_id'):
                 gdal_path = self.filepath
             elif not self.filepath.netcdf_variable:
-                gdal_path = self.filepath.ext(self.filetype)
+                gdal_path = self.filepath.path
             else:
                 gdal_path = 'NETCDF:{path}:{variable}'.format(
-                        path = self.filepath.ext(self.filetype),
+                        path = self.filepath.path,
                         variable = self.filepath.netcdf_variable)
             self._dataset = gdal.Open(gdal_path, self.mod)
             
@@ -171,10 +196,10 @@ class GDALDataset(Dataset):
         
         self.dataset.FlushCache()
         self._dataset = None
-        self._dataset = gdal.Open(self.filepath.ext(self.filetype), mod)
+        self._dataset = gdal.Open(self.filepath.path, mod)
         if not self.dataset:
             logging.error('Dataset at %s did not load for writing',
-                          self.filepath.gtif)
+                          self.filepath.path)
         self.mod = mod
         return self
 
@@ -370,8 +395,10 @@ class GDALDataset(Dataset):
         return self.cmax.grid_coord(res, method=ceil)
 
     def gridcorners(self, res, padding=None):
-        return Dataset(ds_min=self.gridcmin(res), ds_max=self.gridcmax(res),
-                       padding=padding)
+        return SpatialDataset(
+                ds_min=self.gridcmin(res),
+                ds_max=self.gridcmax(res),
+                padding=padding)
     
     @property
     def center(self):
@@ -476,7 +503,7 @@ class GDALDataset(Dataset):
             
         return basemap
 
-class BoundaryDataset(Dataset):
+class BoundaryDataset(SpatialDataset):
     def __init__(self, filepath, update=False):
         self.filepath = filepath
         self.update = update

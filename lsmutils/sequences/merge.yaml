@@ -1,7 +1,7 @@
 !OpSequence
 idstr: merge
 name: Merge
-doc: Merges rasters and reduces the resolution to a workable level
+doc: Merges rasters and adapts the resolution
 input:
   input-list: input-list
   resolution: resolution

@@ -10,5 +10,7 @@ setup(name='lsmutils',
       packages=['lsmutils'],
       install_requires=[
           'geopandas',
+          'netCDF4',
       ],
+      include_package_data=True,
       zip_safe=False)

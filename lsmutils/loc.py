@@ -1,14 +1,9 @@
 import datetime
-import inspect
-import itertools
 import logging
 import os
 import yaml
 
-from copy import copy
-from jinja2 import Environment, FileSystemLoader
-
-from dataset import *
+from .dataset import GDALDataset, BoundaryDataset
 
 class Path(yaml.YAMLObject):
     """
@@ -34,19 +29,18 @@ class Path(yaml.YAMLObject):
                  default_ext='', default_name_fmt='',
                  netcdf_variable='', proj=''):
         """
-        Sets path variables and creates the directory
+        Set path variables
         """
         self.file_id = file_id if file_id else self.file_id
         self.env = None
-        # Set filename
         self.filename = filename if filename else self.filename
         self.dirname = dirname if dirname else self.dirname
-        self.default_ext = (default_ext if default_ext
-                                        else self.default_ext)
-        self.default_name_fmt = (default_name_fmt if default_name_fmt
-                                         else self.default_name_fmt)
-        self.netcdf_variable = (netcdf_variable if netcdf_variable
-                                                else self.netcdf_variable)
+        self.default_ext = (
+            default_ext if default_ext else self.default_ext)
+        self.default_name_fmt = (
+            default_name_fmt if default_name_fmt else self.default_name_fmt)
+        self.netcdf_variable = (
+            netcdf_variable if netcdf_variable else self.netcdf_variable)
         self.proj = (proj if proj else self.proj)
 
     def configure(self, cfg, file_id='', dirname=''):
@@ -75,12 +69,6 @@ class Path(yaml.YAMLObject):
         # Create directory if it does not exist
         if not os.path.exists(self.dirname):
             os.makedirs(self.dirname)
-
-        # Generate a list of file paths for debugging
-        #with open(self.file_id + '.txt', 'a') as fn_file:
-        #    for pth in self.path:
-        #        if os.path.exists(pth):
-        #            fn_file.write(pth + '\n')
 
         return self
     
@@ -188,7 +176,8 @@ class Path(yaml.YAMLObject):
     @property
     def dataset(self):
         try:
-            # Don't bother checking for multiple files if this is already a file
+            # Don't bother checking for multiple files
+            # if this is already a file
             os.path.isfile(self.path)
             self._dataset = self.get_dataset(self)
             return self._dataset
@@ -248,9 +237,6 @@ class Path(yaml.YAMLObject):
                 proj=self.proj)
         if self.env:
             new_path.configure(self.env)
-        print(new_path)
-        print(new_path.path)
-        print(new_path.dataset)
         return new_path
 
     def __iter__(self):
