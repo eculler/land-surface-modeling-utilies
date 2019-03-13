@@ -1,0 +1,35 @@
+project_id: dhsvm
+basin_id: niwot
+log_level: !!python/name:logging.DEBUG
+verbose: true
+base_dir: /Users/elsaculler/Documents/niwot/preprocessing
+temp_dir: tmp
+
+input:
+  dem: !File
+    dirname: /Users/elsaculler/Documents/niwot/raw
+    filename: dem
+    default_ext: tif
+cases:
+  base: !BaseCase {}
+operations:
+  - operation: seq::source-area
+    in:
+      dem: dem
+    out:
+      flow-direction: flow-direction
+      flow-accumulation: flow-accumulation
+  - operation: eccw-to-ncw
+    in:
+      flow-dir-ds: flow-direction
+    out:
+      flow-direction: flow-dir-for-distance
+  - operation: stream-definition-threshold
+    in:
+      flow-acc-ds: flow-accumulation
+    out:
+      stream-raster: stream-raster
+structure: !CaseDirectoryStructure
+  idstr: dhsvm
+  paths:
+    '{basin_id}_{case_id}': 
