@@ -3,30 +3,12 @@ idstr: network
 name: Stream Network Definition by Drop Analysis
 doc: Defines the stream based on the Peuker Douglass algorithm, then computes the stream network.
 input:
-  dem: dem
-  outlet: outlet
+  flow-direction: flow-direction
+  source-area: source-area
   soil-depth: soil-depth
+  outlet: outlet
 tree:
-  - label: no-sinks
-    operation: remove-sinks
-    in:
-      input-ds: dem
-    out:
-      no-sinks: no-sinks
-  - label: flow-direction
-    operation: flow-direction
-    in:
-      dem-ds: no-sinks
-    out:
-      flow-direction: flow-direction
-  - label: flow-accumulation
-    operation: flow-accumulation
-    in:
-      flow-dir-ds: flow-direction
-    out:
-      flow-accumulation: flow-accumulation
-  - label: flow-dir-for-distance
-    operation: rvic-to-taudem
+  - operation: eccw-to-ncw
     in:
       flow-dir-ds: flow-direction
     out:
@@ -35,10 +17,15 @@ tree:
     operation: flow-distance-euclidean
     in:
       flow-dir-ds: flow-dir-for-distance
+  - operation: stream-definition-threshold
+    in:
+      flow-acc-ds: source-area
+    out:
+      stream-raster: stream-raster
   - label: stream-definition-threshold
     operation: stream-definition-threshold
     in:
-      flow-acc-ds: flow-accumulation
+      flow-acc-ds: source-area
   - label: outlet-on-stream
     operation: snap-outlet
     in:
@@ -56,7 +43,7 @@ tree:
     in:
       no-sinks-ds: no-sinks
       flow-dir-ds: flow-direction
-      flow-accum-ds: flow-accumulation
+      source_area-ds: source-area
       outlet-ds: labelled-outlet
     out:
       stream-definition: stream-definition
@@ -65,7 +52,7 @@ tree:
     in:
       no-sinks-ds: no-sinks
       flow-dir-ds: flow-direction
-      flow-accum-ds: flow-accumulation
+      source-area-ds: source-area
       outlet-ds: labelled-outlet
       pd-stream-def-ds: stream-definition
     out:
@@ -74,6 +61,10 @@ tree:
       coord: coord
       network: stream-network
       watershed: watershed
+  - label: soil-depth
+    operation: soil-depth
+    in:
+      slop
   - label: dhsvm-network
     operation: dhsvm-network
     in:

@@ -17,13 +17,13 @@ tree:
       dem-ds: no-sinks
     out:
       flow-direction: flow-direction
-  - label: flow-accumulation
-    operation: flow-accumulation
+  - label: source-area
+    operation: source-area
     in:
       flow-dir-ds: flow-direction
     out:
-      flow-accumulation: flow-accumulation
+      flow-accumulation: source-area
 out:
   - no-sinks
   - flow-direction
-  - flow-accumulation
+  - source-area

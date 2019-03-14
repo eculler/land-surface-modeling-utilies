@@ -110,10 +110,9 @@ class GDALDataset(SpatialDataset):
         'tif': 'GTiff'
     }
     
-    def __init__(self, filepath, template=None, filetype='gtif', proj=None):
+    def __init__(self, filepath, template=None, filetype='gtif'):
         self.filepath = filepath
         self.filetype = filetype
-        self.proj = proj
         self._dataset = None
         self._geotransform = None
         self._nodata = None
@@ -156,15 +155,8 @@ class GDALDataset(SpatialDataset):
             self._dataset = gdal.Open(gdal_path, self.mod)
             
         if self._dataset is None:
-            print('Dataset at %s did not load as raster' % gdal_path)
-        else:
-            # Set the projection if provided
-            if self.proj:
-                logging.debug('Trying projection {}'.format(self.proj))
-                srs = osr.SpatialReference()
-                srs.ImportFromEPSG(self.proj)
-                self._dataset.SetProjection(srs.ExportToWkt())
-        
+            logging.warning('%s did not load as raster' % gdal_path)
+            
         return self._dataset
 
     @dataset.setter
@@ -210,10 +202,18 @@ class GDALDataset(SpatialDataset):
         return self._geotransform
 
     @property
-    def projection(self):
-        if not self._projection:
-            self._projection = self.dataset.GetProjection()
-        return self._projection
+    def srs(self):
+        if not self._srs:
+            self._srs = self.dataset.GetProjection()
+        return self._srs
+
+    @srs.setter
+    def srs(self, new_espg):
+        logging.debug('Trying projection {}'.format(self.espg))
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(self.espg)
+        self._dataset.SetProjection(srs.ExportToWkt())
+        self._srs = srs
 
     @property
     def datatype(self):
@@ -283,14 +283,14 @@ class GDALDataset(SpatialDataset):
         new_dtype = gdal_array.NumericTypeCodeToGDALTypeCode(new_array.dtype)
         if not new_dtype == ds.GetRasterBand(1).DataType:
             geotransform = ds.GetGeoTransform()
-            proj = ds.GetProjection()
+            srs = ds.GetProjection()
             driver = ds.GetDriver()
             ds = driver.Create(self.filepath.path,
                                new_array.shape[1],
                                new_array.shape[0],
                                1, new_dtype)
             ds.SetGeoTransform(geotransform)
-            ds.SetProjection(proj)
+            ds.SetProjection(srs)
             
         ds.GetRasterBand(1).WriteArray(new_array)
         ds.FlushCache()
@@ -504,10 +504,13 @@ class GDALDataset(SpatialDataset):
         return basemap
 
 class BoundaryDataset(SpatialDataset):
-    def __init__(self, filepath, update=False):
+    def __init__(self, filepath, update=False, driver='ESRI Shapefile'):
         self.filepath = filepath
         self.update = update
+        self.driver = driver
         self._dataset = None
+        self._layers = None
+        self._srs = None
         self._min = None
         self._max = None
         self._ul = None
@@ -516,19 +519,32 @@ class BoundaryDataset(SpatialDataset):
         self._lr = None
 
     def new(self):
-        driver = ogr.GetDriverByName('ESRI Shapefile')
-        self._dataset = driver.CreateDataSource(self.filepath.shp)
+        driver = ogr.GetDriverByName(self.driver)
+        self._dataset = driver.CreateDataSource(self.filepath.path)
         return self
         
     @property
     def dataset(self):
         if self._dataset is None:
-            self._dataset = ogr.Open(self.filepath.shp, update=self.update)
+            self._dataset = ogr.Open(self.filepath.path, update=self.update)
         if self._dataset is None:
             logging.debug('Dataset at %s did not load as shapefile',
                           self.filepath.shp)
         return self._dataset
 
+    @dataset.deleter
+    def dataset(self):
+        self._dataset = None
+
+    @property
+    def layers(self):
+        if not self._layers:
+            self._layers = []
+            n = self.dataset.GetLayerCount()
+            for i in range(0, n):
+                self._layers.append(self.dataset.GetLayerByIndex(i))
+        return self._layers
+    
     @property
     def min(self):
         if not self._min:
