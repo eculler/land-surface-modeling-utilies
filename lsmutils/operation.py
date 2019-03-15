@@ -498,7 +498,7 @@ class FlowDirectionOp(Operation):
 
 class FlowDistanceOp(Operation):
 
-    output_types = [OutputType('flow_dist', 'gtif')]
+    output_types = [OutputType('flow-distance', 'gtif')]
     
     def dir2dist(self, lat, lon, direction, res, nodata):
         distance = direction.astype(np.float64)
@@ -537,7 +537,7 @@ class FlowDistanceOp(Operation):
         distance = distance.astype(np.float32)
         flow_dist_ds.array = distance
         
-        return {'flow_dist': flow_dist_ds}
+        return {'flow-distance': flow_dist_ds}
 
 
 class FlowDistanceHaversineOp(FlowDistanceOp):

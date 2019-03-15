@@ -17,7 +17,7 @@ class Case:
 
     @property
     def input(self):
-        input = self.cfg['input'].copy()
+        input = self.cfg['requires'].copy()
         input.update(self.dir_structure.datasets)
         return input
 
@@ -56,6 +56,8 @@ class CaseCollection:
         for case_id, case_grp in self.cfg['cases'].items():
             self.cases += case_grp.initiate_set(case_id, self.cfg)
 
+Directory = namedtuple('Directory', ['path', 'contents'])
+
 class CaseDirStructure(yaml.YAMLObject):
 
     yaml_tag = '!CaseDirectoryStructure'
@@ -67,44 +69,53 @@ class CaseDirStructure(yaml.YAMLObject):
         self.date = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')
         self._datasets = {}
         
-        self.loc = {}
         self.path_info = {}
-        layer = [([key], value )
-                 for (key, value) in self.structure.items()]
+        self.output_files = {}
+        layer = [Directory(path=[name], contents=contents)
+                 for (name, contents) in self.structure.items()]
         while layer:
             next_layer = []
             for directory in layer:
-                path = directory[0]
-                loc = directory[1]
-                if loc is None or hasattr(loc, 'file_id'):
+                # Stop iteration
+                if (hasattr(directory.contents, 'file_id') or
+                        directory.contents is None):
                     continue
-                self.loc.update({key: path
-                                 for key, value in loc.items()
-                                 if hasattr(value, 'file_id')})
-                self.path_info.update(loc)
-                next_layer += [(path + [key], value)
-                                for key, value in loc.items()]
+
+                # Save location of each output file
+                self.output_files.update({
+                    key: directory.path
+                    for key, value in directory.contents.items()
+                    if hasattr(value, 'file_id')})
+                # Save contents of each directory
+                self.path_info.update(directory.contents)
+
+                # Include subdirectories in the next layer
+                next_layer += [
+                    Directory(directory.path + [key], value)
+                    for key, value in directory.contents.items()]
             layer = next_layer
 
     def configure(self, cfg):
+        # Add output files
         self.paths.update({
             key: self.path_info[key].configure(
                     cfg, file_id=key, dirname=os.path.join(*loc))
-            for key, loc in self.loc.items()
+            for key, loc in self.output_files.items()
         })
-        print('Configuring paths')
 
-        # Add static files
+        # Add input files
         self.paths.update({
             key: path.configure(cfg, file_id=key)
-            for key, path in cfg['input'].items()
+            for key, path in cfg['requires'].items()
             if hasattr(path, 'file_id')
         })
 
         # Generate path strings
         self.files = {key: path.path
-                      for (key, path) in self.paths.items() }
-        print(self.files)
+                      for (key, path) in self.paths.items()}
+        for key, path in self.files.items():
+            filetype = 'Output' if key in self.output_files else 'Input'
+            logging.info('%s file %s located at %s', filetype, key, path)
         return self
 
     @property

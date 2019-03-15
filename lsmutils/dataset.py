@@ -143,7 +143,9 @@ class GDALDataset(SpatialDataset):
         
     @property
     def dataset(self):
-        if self._dataset is None:
+        gdal_path = 'unknown file'
+        
+        if not self._dataset:
             if not hasattr(self.filepath, 'file_id'):
                 gdal_path = self.filepath
             elif not self.filepath.netcdf_variable:
@@ -154,7 +156,7 @@ class GDALDataset(SpatialDataset):
                         variable = self.filepath.netcdf_variable)
             self._dataset = gdal.Open(gdal_path, self.mod)
             
-        if self._dataset is None:
+        if not self._dataset:
             logging.warning('%s did not load as raster' % gdal_path)
             
         return self._dataset
@@ -510,7 +512,6 @@ class BoundaryDataset(SpatialDataset):
         self.driver = driver
         self._dataset = None
         self._layers = None
-        self._srs = None
         self._min = None
         self._max = None
         self._ul = None
