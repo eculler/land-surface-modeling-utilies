@@ -39,31 +39,7 @@ class OperationSequence(yaml.YAMLObject):
                     'doc={doc}, operations={operations})')
         return repr_fmt.format(name=self.name, idstr=self.idstr,
                                doc=self.doc, operations=self.operations)
-
-    def expand(self, seqs, input_files = {}):
-        while [o for o in self.operations if o['name'].startswith('seq::')]:
-            i, op = next(
-                    (i, op)
-                    for i, op in enumerate(self.operations)
-                    if op['name'].startswith('seq::'))
-            seq = copy.copy(
-                    seqs[op['name'].replace('seq::', '')]).expand(seqs)
-            self.operations = (
-                self.operations[:i] +
-                seq.operations +
-                self.operations[i+1:])
-        if input_files:
-            return self
-        for op in self.operations:
-            for key, value in op['in'].items():
-                if not value in self.requires:
-                    op['in'][key] = '::'.join([self.idstr, value])
-            for key, value in op['out'].items():
-                op['out'].update({
-                    key: '::'.join([self.idstr, value])
-                    for key, value in op['out'].items()})
-        return self
-            
+    
     @property
     def layers(self):
         next_ids = self.out
@@ -86,33 +62,42 @@ class OperationSequence(yaml.YAMLObject):
         logging.info('Operation sequence layers: \n{}'.format(self._layers))
         return self._layers
         
-    def run(self, case, op_in, op_out):
-        logging.info('Running operation {}'.format(self.idstr))
-        input = op_in.copy()
-        input.update({op_key: case.input[in_key] 
-                      for op_key, in_key in input.items()
+    def run(self, case, op_in, op_out, seqs):
+        logging.info('Running sequence {}'.format(self.idstr))
+        
+        inpt = op_in.copy()
+        inpt.update({op_key: case.input[in_key] 
+                      for op_key, in_key in op_in.items()
                       if in_key in case.input})
+        
         namespace = {}
         paths = {}
         
-        for req, location in self.requires.items():
+        for req, location in inpt.items():
             # Configuration may supply a file to skip required module
-            if location in input:
-                namespace[req] = input[location]
+            if location in inpt:
+                namespace[req] = inpt[location]
                 continue
             
             # Run dependency sequences
             logging.debug('Processing dependency %s', location)
             (module, key) = location.split('::')
-            if not module in input:
-                input[module] = seqs[module].run(case, input)
+            if not module in inpt:
+                inpt[module] = seqs[module].run(case, input)
 
             # Build flat namespace
             namespace[req] = input[module][key]
 
         for lyr in self.layers:
             for op in lyr:
-                logging.debug('Preparing to run %s', op['label'])
+                logging.debug('Preparing to run %s', op['name'])
+                
+                if op['name'].startswith('seq::'):
+                    seq_name = op['name'].replace('seq::', '')
+                    case = getattr(seqs, seq_name).run(
+                        case, inpt, op['out'], seqs)
+                continue
+            
                 inpt = {key.replace('-', '_'): namespace[value]
                         for key, value in op['in'].items()}
  
@@ -132,6 +117,8 @@ class OperationSequence(yaml.YAMLObject):
                      for op_key, out_key in op_out.items()
                      if op_key in namespace})
         
+        return case
+
         return case
 
 class OpSeqLoader(object):
@@ -166,7 +153,6 @@ def run_cfg(cfg):
         '',
         cfg['operations']
     )
-    master_seq.expand(seqs, cfg['requires'])
 
     logging.info('Operations to run:')
     for op in master_seq.operations:
@@ -175,45 +161,11 @@ def run_cfg(cfg):
             logging.info('    I: %s <- %s', key, value)
         for key, value in op['out'].items():
             logging.info('    O: %s <- %s', key, value)
-    
-    for op in cfg['operations']:
-        if 'many' in op.keys():
-            opcls = Operation.__children__()[op['operation']]
-            length = len(case.input[op['in'][op['many'][0]]])
-            for i in range(length):
-                inpt = op['in'].copy()
-                inpt = {key.replace('-', '_'): value
-                            for key, value in inpt.items()}
-                inpt.update({key.replace('-', '_'):
-                        case.input[value][i] if key in op['many']
-                            else case.input[value]
-                        for key, value in op['in'].items()
-                        if value in case.input})
-                run_id = case.input[op['in'][
-                        op['many'][0]]][i].filepath.filename
-                opcls(case.cfg, list(op['out'].values())[0],
-                      run_id=run_id, **inpt).save()
 
-        # Run a pre-defined operation sequence
-        elif op['name'].startswith('seq::'):
-            op_name = op['name'].replace('seq::', '')
-            case = getattr(seqs, op_name).run(case, op['in'], op['out'])
-
-        else:
-            opcls = Operation.__children__()[op['name']]
-            inpt = op['in'].copy()
-            inpt = {key.replace('-', '_'): value
-                            for key, value in inpt.items()}
-
-            inpt.update({key.replace('-', '_'): case.input[value]
-                        for key, value in op['in'].items()
-                        if value in case.input})
-
-            opres = opcls(case.cfg, list(op['out'].values())[0],
-                          **inpt).save()
-            for ot, ds in opres.items():
-                case.dir_structure.update_datasets({
-                    op['out'][ot]: ds for ot, ds in opres.items()
-                    if ot in op['out']})
-                
+    case = master_seq.run(
+            case,
+            {key: key for key in master_seq.requires},
+            {key: key for key in master_seq.computes},
+            seqs
+    )
     return case
