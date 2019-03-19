@@ -3,6 +3,7 @@ import csv
 import gdal
 import geopandas as gpd
 import glob
+import inspect
 import logging
 import numpy as np
 import ogr
@@ -44,14 +45,14 @@ class Operation(metaclass=OperationMeta):
     name = NotImplemented
     op_id = NotImplemented
     output_types = NotImplemented
-    filename_format = '{seq_id}_{output_type}'
+    filename_format = '{output_label}'
 
     start_msg = 'Calculating {name}'
     end_msg = '{name} saved at {path}'
     error_msg = '{name} calculation FAILED'
     
     def __init__(self, run_config, seq_id, run_id='',
-                 plot_boundary=None, paths=[], **kwargs):
+                 paths=[], **kwargs):
         logging.debug('Initializing %s operation', self.op_id)
         self._resolution = None
         self._input_datasets = None
@@ -60,17 +61,6 @@ class Operation(metaclass=OperationMeta):
         self.kwargs = kwargs
         self.run_config = run_config
         self.log_level = run_config['log_level']
-
-        # Plot settings
-        self.plot = self.kwargs.pop('plot', False)
-        self.quiver = self.kwargs.pop('quiver', False)
-        self.colorlog = self.kwargs.pop('colorlog', False)
-        if 'boundary_ds' in self.kwargs:
-            self.boundary_ds = self.kwargs['boundary_ds']
-        elif not plot_boundary is None:
-            self.boundary_ds = plot_boundary
-        else:
-            self.boundary_ds = None
 
         # IDs
         self.case_id = run_config['case_id']
@@ -165,13 +155,6 @@ class Operation(metaclass=OperationMeta):
             if key in filetypes:
                 filetype = filetypes[key]
             self.datasets[key].saveas(filetype, datatype=datatype)
-
-        # Plot results
-        if self.plot:
-            for ds in self.datasets:
-            	ds.plot(self.name, self.path.png,
-                	boundary_ds=self.boundary_ds,
-                        quiver=self.quiver, colorlog=self.colorlog)
 
         if self.datasets:
             for key, pth in self.paths.items():

@@ -49,16 +49,11 @@ class OperationSequence(yaml.YAMLObject):
                 op for op in self.operations
                 if any([id in op['out'].values() for id in list(next_ids)])]
             
-            # Remove operations in this layer from subsequent layers
-            current_labels = [op['label'] for op in this_layer]
-            self._layers = [
-                [op for op in lyr if op['label'] not in current_labels]
-                for lyr in self._layers
-            ]
             # Add layers in reverse order
             self._layers.insert(0, this_layer)
             next_ids = set([idstr for op in this_layer
                                 for idstr in op['in'].values()])
+
         logging.info('Operation sequence layers: \n{}'.format(self._layers))
         return self._layers
         
