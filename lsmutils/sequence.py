@@ -1,45 +1,110 @@
 import copy
 import logging
 import pkg_resources
+import random
+import string
 import yaml
 
 from .calibrate import CaseCollection
 from .operation import Operation
 from .utils import write_netcdf
 
-class OperationSequence(yaml.YAMLObject):
+class OpSequenceMeta(yaml.YAMLObjectMetaclass):
+
+    def __children__(cls):
+        loc = 'sequences'
+        children = {}
+        for resource in pkg_resources.resource_listdir(__name__, loc):
+            if resource.endswith('.yaml'):
+                logging.debug('Loading %s', resource)
+                res_path = '/'.join([loc, resource])
+                opseq_def = pkg_resources.resource_string(__name__, res_path)
+                opseq = yaml.load(opseq_def)
+                children[opseq.name] = opseq
+        return children
+
+class OperationSequence(yaml.YAMLObject, metaclass=OpSequenceMeta):
     """
     Loads a sequence of GIS operations from a yaml file
     """
 
     yaml_tag = u'!OpSequence'
 
-    def __init__(self, idstr, name, doc, operations):
-        self.idstr = idstr
+    def __init__(
+            self, operations, name='cfg', title='Configuration File', doc=''):
         self.name = name
+        self.title = title
         self.doc = doc
-        self.operations = operations
+        self.inpt = None
+        self.out = None
+        self.id = ''.join([random.choice(string.ascii_letters + string.digits)
+                           for n in range(6)])
 
-        self.computes = [
-            output for op in operations for output in op['out'].values()]
-        self.requires = [
-            req for op in operations for req in op['in'].values()
-            if not req in self.computes]
-        logging.debug('%s operation requires %s', self.name, self.requires)
+        self._new_labels = None
+
+        # Unpack subsequences
+        self.operations = []
+        new_labels = {}
+        for step in operations:
+            if hasattr(step, 'operations'):
+                new_labels.update(step.new_labels)
+                self.operations.extend(step.operations)
+            else:
+                step.relabel(new_labels)
+                self.operations.append(step)
+
         logging.debug('%s operation computes %s', self.name, self.computes)
         
 
     @classmethod
     def from_yaml(cls, loader, node):
+        seq_class = cls
         fields = loader.construct_mapping(node, deep=True)
+
+        if not 'operations' in fields:
+            obj = cls.__children__()[fields['name']]
+            obj.configure(fields['in'], fields['out'])
+            return obj
+        
         return cls(**fields)
+
+    def configure(self, inpt, out):
+        self.inpt = inpt
+        self.out = out
+        for op in self.operations:
+            op.relabel(self.new_labels)
     
     def __repr__(self):
         repr_fmt = ('OperationSequence(name={name}, id={idstr}, ' +
                     'doc={doc}, operations={operations})')
         return repr_fmt.format(name=self.name, idstr=self.idstr,
                                doc=self.doc, operations=self.operations)
-    
+
+    @property
+    def computes(self):
+        return [
+            output for op in self.operations
+            for output in op.out.values()
+        ]
+
+    @property
+    def new_labels(self):
+        if not self._new_labels:
+            self._new_labels = {
+                output: '{}_{}'.format(output, self.id)
+                for op in self.operations
+                for output in op.out.values()
+            }
+        return self._new_labels
+
+    @property
+    def requires(self):
+        return [
+            inpt for op in self.operations
+            for inpt in op.inpt.values()
+            if not inpt in self.computes
+        ]
+
     @property
     def layers(self):
         next_ids = self.out
@@ -57,110 +122,46 @@ class OperationSequence(yaml.YAMLObject):
         logging.info('Operation sequence layers: \n{}'.format(self._layers))
         return self._layers
         
-    def run(self, case, op_in, op_out, seqs):
-        logging.info('Running sequence {}'.format(self.idstr))
+    def run(self, case):
+        logging.info('Running {} sequence'.format(self.title))
         
-        inpt = op_in.copy()
-        inpt.update({op_key: case.input[in_key] 
-                      for op_key, in_key in op_in.items()
-                      if in_key in case.input})
-        
-        namespace = {}
-        paths = {}
-        
-        for req, location in inpt.items():
-            # Configuration may supply a file to skip required module
-            if location in inpt:
-                namespace[req] = inpt[location]
-                continue
+        for op in self.operations:
+            all_data = copy.copy(self.inpt)
+            all_data.update(case.dir_structure.datasets)
+            inpt_data = {
+                key.replace('-', '_'): all_data[value]
+                for key, value in op.inpt.items()}
             
-            # Run dependency sequences
-            logging.debug('Processing dependency %s', location)
-            (module, key) = location.split('::')
-            if not module in inpt:
-                inpt[module] = seqs[module].run(case, input)
-
-            # Build flat namespace
-            namespace[req] = input[module][key]
-
-        for lyr in self.layers:
-            for op in lyr:
-                logging.debug('Preparing to run %s', op['name'])
+            output_data = op.configure(case.cfg, **inpt_data).save()
                 
-                if op['name'].startswith('seq::'):
-                    seq_name = op['name'].replace('seq::', '')
-                    case = getattr(seqs, seq_name).run(
-                        case, inpt, op['out'], seqs)
-                continue
-            
-                inpt = {key.replace('-', '_'): namespace[value]
-                        for key, value in op['in'].items()}
- 
-                # Optionally configure to save to another location
-                for op_key, out_key in op['out'].items():
-                    if out_key in case.dir_structure.paths:
-                        inpt[op_key] = case.dir_structure.paths[out_key]
-                    
-                opcls = Operation.__children__()[op['operation']]
-                seq_id = list(op_out.values())[0]
-                output = opcls(case.cfg, seq_id, **inpt).save()
-                namespace.update({out_key: output[op_key]
-                                  for out_key, op_key in op['out'].items()})
-                
-                case.dir_structure.update_datasets(
-                    {out_key: namespace[op_key] 
-                     for op_key, out_key in op_out.items()
-                     if op_key in namespace})
+            case.dir_structure.update_datasets({
+                out_key: output_data[op_key] 
+                for op_key, out_key in op.out.items()
+                if op_key in output_data})
         
         return case
-
-        return case
-
-class OpSeqLoader(object):
-
-    loc = 'sequences'
-    
-    def __init__(self):
-        self.load()
-
-    def load(self):
-        for resource in pkg_resources.resource_listdir(__name__, self.loc):
-            if resource.endswith('.yaml'):
-                logging.debug('Loading %s', resource)
-                res_path = '/'.join([self.loc, resource])
-                opseq_def = pkg_resources.resource_string(__name__, res_path)
-                opseq = yaml.load(opseq_def)
-                setattr(self, opseq.idstr, opseq)
-
-    def __getitem__(self, key):
-        return getattr(self, key)
 
 def run_cfg(cfg):
+    logging.debug('Loaded configuration \n%s', yaml.dump(cfg))
+    
     collection = CaseCollection(cfg)
     cases = collection.cases
     case = cases[0]
-
-    seqs = OpSeqLoader()
+    logging.debug(case.dir_structure.datasets)
     
-    master_seq = OperationSequence(
-        'main',
-        'Main Sequence',
-        '',
-        cfg['operations']
-    )
+    master_seq = OperationSequence(cfg['operations'])
+    master_seq.configure(
+        inpt=cfg['in'],
+        out=case.dir_structure.output_files)
 
     logging.info('Operations to run:')
     for op in master_seq.operations:
-        logging.info('  %s', op['name'])
-        for key, value in op['in'].items():
+        logging.info('  %s', op.title)
+        for key, value in op.inpt.items():
             logging.info('    I: %s <- %s', key, value)
-        for key, value in op['out'].items():
+        for key, value in op.out.items():
             logging.info('    O: %s <- %s', key, value)
 
-    case = master_seq.run(
-            case,
-            {key: key for key in master_seq.requires},
-            {key: key for key in master_seq.computes},
-            seqs
-    )
+    case = master_seq.run(case)
+    
     return case

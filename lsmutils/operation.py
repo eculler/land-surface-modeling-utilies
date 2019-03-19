@@ -22,17 +22,17 @@ from .utils import CoordProperty
 
 OutputType = collections.namedtuple('OutputType', ['key', 'filetype'])
 
-class OperationMeta(type):
-    
+class OperationMeta(yaml.YAMLObjectMetaclass):
+
     def __children__(cls):
         children = {}
         for child in cls.__subclasses__():
-            children.update({child.op_id: child})
+            children.update({child.name: child})
             children.update(child.__children__())
         return children
 
 
-class Operation(metaclass=OperationMeta):
+class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     """
     A parent class to perform some operation on a raster dataset
 
@@ -41,19 +41,32 @@ class Operation(metaclass=OperationMeta):
       - type_id: a path-friendly identifier
       - run(): a function to perform the raster operation.
     """
+
+    yaml_tag = u'!Operation'
     
+    title = NotImplemented
     name = NotImplemented
-    op_id = NotImplemented
     output_types = NotImplemented
     filename_format = '{output_label}'
 
-    start_msg = 'Calculating {name}'
-    end_msg = '{name} saved at {path}'
-    error_msg = '{name} calculation FAILED'
+    start_msg = 'Calculating {title}'
+    end_msg = '{title} saved at {path}'
+    error_msg = '{title} calculation FAILED'
+
+    def __init__(self, inpt, out):
+        self.inpt = inpt
+        self.out = out
     
-    def __init__(self, run_config, seq_id, run_id='',
-                 paths=[], **kwargs):
-        logging.debug('Initializing %s operation', self.op_id)
+    @classmethod
+    def from_yaml(cls, loader, node):
+        fields = loader.construct_mapping(node, deep=True)
+        fields['inpt'] = fields.pop('in')
+        child_cls = cls.__children__()[fields.pop('name')]
+        return child_cls(**fields)
+    
+    def configure(self, run_config, paths=[], **kwargs):
+        logging.debug('Configuring %s operation', self.name)
+        
         self._resolution = None
         self._input_datasets = None
         
@@ -65,24 +78,23 @@ class Operation(metaclass=OperationMeta):
         # IDs
         self.case_id = run_config['case_id']
         self.base_dir = run_config['base_dir']
-        if run_id:
-            self.filename_format = '{run_id}_' + self.filename_format
 
         # Get non-automatic attributes for filename
         self.attributes = kwargs.copy()
+        self.attributes
         self.attributes['res'] = self.resolution
-        self.attributes['seq_id'] = seq_id
-        self.attributes['run_id'] = run_id
         self.attributes.update(
-                {name: getattr(self, name) for name in dir(self)})
+                {title: getattr(self, title) for title in dir(self)})
 
-        logging.debug('Format %s file names', self.op_id)
+        logging.debug('Format %s file names', self.name)
         self.filenames = {
             ot.key: self.filename_format.format(
-                    output_type=ot.key, **self.attributes).replace('.', '-')
+                    output_type=ot.key,
+                    output_label=self.out[ot.key],
+                    **self.attributes).replace('.', '-')
             for ot in self.output_types}
 
-        logging.debug('Resolving %s paths', self.op_id)
+        logging.debug('Resolving %s paths', self.name)
         if paths:
             self.paths = paths
         else:
@@ -97,6 +109,19 @@ class Operation(metaclass=OperationMeta):
 
         # Initialize variables
         self.datasets = []
+        
+        return self
+
+    def relabel(self, new_labels):
+        for pykey, dsname in self.inpt.items():
+            if dsname in new_labels:
+                self.inpt[pykey] = new_labels[dsname]
+                logging.debug(
+                        'Relabelled %s to %s', dsname, self.inpt[pykey])
+        for pykey, dsname in self.out.items():
+            if dsname in new_labels:
+                self.out[pykey] = new_labels[dsname]
+                logging.debug('Relabelled %s to %s', dsname, self.out[pykey])
 
     @property
     def input_datasets(self):
@@ -131,7 +156,7 @@ class Operation(metaclass=OperationMeta):
         return self.saveas()
 
     def saveas(self, filetypes={}, datatypes={}):
-        logging.info(self.start_msg.format(name=self.name))
+        logging.info(self.start_msg.format(title=self.title))
         
         # Change path extensions to match working extension
         for key, filetype in filetypes.items():
@@ -159,16 +184,16 @@ class Operation(metaclass=OperationMeta):
         if self.datasets:
             for key, pth in self.paths.items():
                 logging.info(
-                        self.end_msg.format(name=self.name, path=pth.path))
+                        self.end_msg.format(title=self.title, path=pth.path))
         else:
-            logging.error(self.error_msg.format(name=self.name))
+            logging.error(self.error_msg.format(title=self.title))
 
         return self.datasets
 
 class MergeOp(Operation):
 
-    name = 'Merged Raster'
-    op_id = 'merge'
+    title = 'Merged Raster'
+    name = 'merge'
     output_types = ['merged']
 
     def run(self, raster_list):
@@ -178,8 +203,8 @@ class MergeOp(Operation):
 
 class AlignOp(Operation):
 
-    name = 'Align Dataset'
-    op_id = 'align'
+    title = 'Align Dataset'
+    name = 'align'
     output_types = [OutputType('aligned', 'gtif')]
 
     def run(self, input_ds, boundary_ds=None, 
@@ -209,8 +234,8 @@ class AlignOp(Operation):
     
 class ClipOp(Operation):
 
-    name = 'Raster clipped to boundary'
-    op_id = 'clip'
+    title = 'Raster clipped to boundary'
+    name = 'clip'
     output_types = [OutputType('clipped_raster', 'gtif')]
     
     def run(self, input_ds, boundary_ds):
@@ -225,8 +250,8 @@ class ClipOp(Operation):
 
 class ReprojectRasterOp(Operation):
 
-    name = 'Reproject raster'
-    op_id = 'reproject-raster'
+    title = 'Reproject raster'
+    name = 'reproject-raster'
     output_types = [OutputType('reprojected', 'gtif')]
 
     def run(self, input_ds, proj):
@@ -237,8 +262,8 @@ class ReprojectRasterOp(Operation):
 
 class ReprojectVectorOp(Operation):
 
-    name = 'Reproject Vector Dataset'
-    op_id = 'reproject-vector'
+    title = 'Reproject Vector Dataset'
+    name = 'reproject-vector'
     output_types = [OutputType('reprojected', 'shp')]
 
     def run(self, input_ds, epsg):
@@ -295,8 +320,8 @@ class ReprojectVectorOp(Operation):
 
 class SumOp(Operation):
 
-    name = 'Sum raster'
-    op_id = 'sum'
+    title = 'Sum raster'
+    name = 'sum'
     output_type = 'csv'
 
     def run(self, input_ds, label_ds=None, fraction_ds=None):
@@ -323,8 +348,8 @@ class SumOp(Operation):
     
 class MaskOp(Operation):
 
-    name = 'Raster mask of boundary area'
-    op_id = 'mask'
+    title = 'Raster mask of boundary area'
+    name = 'mask'
 
     def run(self, input_ds, boundary_ds):
         output_ds = GDALDataset(self.path, template=input_ds)
@@ -343,8 +368,8 @@ class MaskOp(Operation):
 
 class UniqueOp(Operation):
 
-    name = 'A unique number in each VIC-resolution grid cell'
-    op_id = 'unique'
+    title = 'A unique number in each VIC-resolution grid cell'
+    name = 'unique'
     output_type = 'unique'
     filename_format = '{case_id}_{output_type}'
     
@@ -359,8 +384,8 @@ class UniqueOp(Operation):
 
 class ZonesOp(Operation):
 
-    name = 'Downscaled Zones for each VIC gridcell'
-    op_id = 'zones'
+    title = 'Downscaled Zones for each VIC gridcell'
+    name = 'zones'
     output_type = 'zones'
     filename_format = '{case_id}_{output_type}'
     
@@ -375,8 +400,8 @@ class ZonesOp(Operation):
 
 class FractionOp(Operation):
 
-    name = 'Watershed fractional area'
-    op_id = 'fraction'
+    title = 'Watershed fractional area'
+    name = 'fraction'
     output_type = 'fractions'
     filename_format = '{case_id}_{output_type}'
 
@@ -400,8 +425,8 @@ class FractionOp(Operation):
 
 class GridAreaOp(Operation):
 
-    name = 'Grid Area'
-    op_id = 'grid-area'
+    title = 'Grid Area'
+    name = 'grid-area'
     output_type = 'grid_area'
     filename_format = '{case_id}_{output_type}'
 
@@ -414,7 +439,7 @@ class GridAreaOp(Operation):
 
 class ClipToCoarseOp(Operation):
 
-    name = 'Clip to outline of watershed at VIC gridcell resolution'
+    title = 'Clip to outline of watershed at VIC gridcell resolution'
     output_type = 'clip_to_coarse'
 
     def run(self, coarse_mask_ds, fine_ds):
@@ -448,8 +473,8 @@ class ClipToCoarseOp(Operation):
 
 class RemoveSinksOp(Operation):
 
-    name = 'Sinks Removed'
-    op_id = 'remove-sinks'
+    title = 'Sinks Removed'
+    name = 'remove-sinks'
     output_types = [OutputType('no-sinks', 'tif')]
 
     def run(self, input_ds):
@@ -462,8 +487,8 @@ class RemoveSinksOp(Operation):
         
 class FlowDirectionOp(Operation):
 
-    name = 'Flow Direction'
-    op_id = 'flow-direction'
+    title = 'Flow Direction'
+    name = 'flow-direction'
     output_types = [
         OutputType('flow-direction', 'tif'),
         OutputType('slope', 'tif')
@@ -525,8 +550,8 @@ class FlowDistanceOp(Operation):
 
 class FlowDistanceHaversineOp(FlowDistanceOp):
 
-    name = 'Haversine Flow Distance'
-    op_id = 'flow-distance-haversine'
+    title = 'Haversine Flow Distance'
+    name = 'flow-distance-haversine'
 
     def distance(self, lon1, lat1, lon2, lat2):
         lon1 = np.deg2rad(lon1)
@@ -541,16 +566,16 @@ class FlowDistanceHaversineOp(FlowDistanceOp):
 
 class FlowDistanceEuclideanOp(FlowDistanceOp):
 
-    name = 'Euclidean Flow Distance'
-    op_id = 'flow-distance-euclidean'
+    title = 'Euclidean Flow Distance'
+    name = 'flow-distance-euclidean'
 
     def distance(self, lon1, lat1, lon2, lat2):
         return np.sqrt((lon2 - lon1)**2 + (lat2 - lat1)**2)
     
 class SourceAreaOp(Operation):
 
-    name = 'Source Area/Flow Accumulation'
-    op_id = 'source-area'
+    title = 'Source Area/Flow Accumulation'
+    name = 'source-area'
     output_types = [OutputType('source-area', 'tif')]
 
     def run(self, flow_dir_ds):
@@ -568,8 +593,8 @@ class SourceAreaOp(Operation):
 class StreamDefinitionByThresholdOp(Operation):
     """ Run the TauDEM Stream Definition By Threshold Command """
     
-    name = 'Stream Definition By Threshold'
-    op_id = 'stream-definition-threshold'
+    title = 'Stream Definition By Threshold'
+    name = 'stream-definition-threshold'
     output_types = [OutputType('stream-raster', 'tif')]
 
     def run(self, source_area_ds):
@@ -586,8 +611,8 @@ class StreamDefinitionByThresholdOp(Operation):
 class MoveOutletsToStreamOp(Operation):
     """ Run the TauDEM Move Outlets to Streams Command """
     
-    name = 'Move Outlets to Streams'
-    op_id = 'snap-outlet'
+    title = 'Move Outlets to Streams'
+    name = 'snap-outlet'
     output_types = [OutputType('outlet-on-stream', 'tif')]
     
     def run(self, flow_dir_ds, stream_ds, outlet_ds):
@@ -626,8 +651,8 @@ class MoveOutletsToStreamOp(Operation):
 class LabelGagesOp(Operation):
     """ Add a sequential id field to each outlet in a shapefile """
 
-    name = 'Labeled Gages'
-    op_id = 'label-outlet'
+    title = 'Labeled Gages'
+    name = 'label-outlet'
     output_types = [OutputType('labelled-outlet', 'gtif')]
 
     def run(self, outlet_ds):
@@ -666,8 +691,8 @@ class GageWatershedOp(Operation):
     Raster labeling each point by which gage it drains to directly
     """
     
-    name = 'Gage Watershed'
-    op_id = 'gage-watershed'
+    title = 'Gage Watershed'
+    name = 'gage-watershed'
     output_types = [OutputType('gage-watershed', 'tif')]
     
     def run(self, flow_dir_ds, outlet_ds):
@@ -682,8 +707,8 @@ class GageWatershedOp(Operation):
 class PeukerDouglasStreamDefinitionOp(Operation):
     """ Run the TauDEM Peuker Douglas Stream Definition Command """
     
-    name = 'Peuker Douglas Stream Definition'
-    op_id = 'stream-def-pd'
+    title = 'Peuker Douglas Stream Definition'
+    name = 'stream-def-pd'
     output_types = [
         OutputType('ssa', 'tif'),
         OutputType('drop-analysis', 'txt'),
@@ -739,8 +764,8 @@ class PeukerDouglasStreamDefinitionOp(Operation):
 class DinfFlowDirOp(Operation):
     """ Compute Slope and Aspect from a DEM """
 
-    name = 'D-infinity Flow Direction'
-    op_id = 'dinf-flow-direction'
+    title = 'D-infinity Flow Direction'
+    name = 'dinf-flow-direction'
     output_types = [
         OutputType('slope', 'tif'),
         OutputType('aspect', 'tif')
@@ -763,8 +788,8 @@ class Slope(Operation):
     units as elevation!
     """
 
-    name = 'Slope'
-    op_id = 'slope'
+    title = 'Slope'
+    name = 'slope'
     output_types = [OutputType('slope', 'gtif')]
 
     def run(self, elevation_ds):
@@ -792,8 +817,8 @@ class Slope(Operation):
 class SoilDepthOp(Operation):
     """ Compute soil depth from slope, elevation, and source area"""
 
-    name = 'Soil Depth'
-    op_id = 'soil-depth'
+    title = 'Soil Depth'
+    name = 'soil-depth'
     output_types = [OutputType('soil-depth', 'gtif')]
 
     def run(self, slope_ds, source_ds, elev_ds,
@@ -832,8 +857,8 @@ class SoilDepthOp(Operation):
 class StreamNetworkOp(Operation):
     """ Run the TauDEM Stream Reach and Watershed Command """
     
-    name = 'Stream Network'
-    op_id = 'stream-network'
+    title = 'Stream Network'
+    name = 'stream-network'
     output_types = [
         OutputType('order', 'tif'),
         OutputType('tree', 'tsv'),
@@ -895,8 +920,8 @@ class StreamNetworkOp(Operation):
 class DHSVMNetworkOp(Operation):
     """ Run the TauDEM Stream Reach and Watershed Command """
     
-    name = 'DHSVM Network'
-    op_id = 'dhsvm-network'
+    title = 'DHSVM Network'
+    name = 'dhsvm-network'
     output_types = [
         OutputType('network', 'csv'),
         OutputType('map', 'csv'),
@@ -1059,8 +1084,8 @@ class DHSVMNetworkOp(Operation):
 class RasterToShapefileOp(Operation):
     """ Convert a raster to a shapefile """
     
-    name = 'Raster to Shapefile'
-    op_id = 'raster-to-shapefile'
+    title = 'Raster to Shapefile'
+    name = 'raster-to-shapefile'
     output_type = 'shapefile'
     filename_format = '{case_id}_{output_type}'
 
@@ -1092,8 +1117,8 @@ class RasterToShapefileOp(Operation):
 class LatLonToShapefileOp(Operation):
     """ Create a shapefile with a single point """
     
-    name = 'Coordinate to Shapefile'
-    op_id = 'coordinate-to-shapefile'
+    title = 'Coordinate to Shapefile'
+    name = 'coordinate-to-shapefile'
     output_types = [OutputType('shapefile', 'shp')]
 
     def run(self, coordinate, idstr='coordinate'):
@@ -1124,8 +1149,8 @@ class LatLonToShapefileOp(Operation):
 
 class UpscaleFlowDirectionOp(Operation):
 
-    name = 'Final Resolution Flow Direction'
-    op_id = 'upscale-flow-direction'
+    title = 'Final Resolution Flow Direction'
+    name = 'upscale-flow-direction'
     output_types = ['flow-direction']
 
     @property
@@ -1192,8 +1217,8 @@ class ConvertOp(Operation):
 
 class NorthCWToEastCCWOp(ConvertOp):
     
-    name = 'North CW (RVIC) to East CCW (TauDEM) Flow Directions'
-    op_id = 'ncw-to-eccw'
+    title = 'North CW (RVIC) to East CCW (TauDEM) Flow Directions'
+    name = 'ncw-to-eccw'
     filename_format = '{seq_id}_eastccw_{output_type}'
 
     def convert(self, array):
@@ -1202,8 +1227,8 @@ class NorthCWToEastCCWOp(ConvertOp):
 
 class EastCCWToNorthCWOp(ConvertOp):
     
-    name = 'East CCW (TauDEM) to North CW (RVIC) Flow Directions'
-    op_id = 'eccw-to-ncw'
+    title = 'East CCW (TauDEM) to North CW (RVIC) Flow Directions'
+    name = 'eccw-to-ncw'
     filename_format = '{seq_id}_northcw_{output_type}'
 
     def convert(self, array):
@@ -1217,8 +1242,8 @@ class BasinIDOp(Operation):
     This is a placeholder to actually computing the basin ID with TauDEM
     Gage Watershed or others - it will not work with multiple basins.
     '''
-    name = 'Basin ID'
-    op_id = 'basin-id'
+    title = 'Basin ID'
+    name = 'basin-id'
     output_type = 'basin_id'
 
     def run(self, path, mask_ds):
@@ -1233,8 +1258,8 @@ class MeltNetCDF(Operation):
     '''
     Generates a CSV file with values for each coordinate in a raster
     '''
-    name = 'Melted Raster'
-    op_id = 'melt-nc'
+    title = 'Melted Raster'
+    name = 'melt-nc'
     output_type = 'melted_raster'
 
     def run(self, path, raster_ds, variable):
@@ -1259,8 +1284,8 @@ class Melt(Operation):
     '''
     Generates a CSV file with values for each coordinate in a raster
     '''
-    name = 'Melted Raster'
-    op_id = 'melt'
+    title = 'Melted Raster'
+    name = 'melt'
     output_type = 'melted_raster'
 
     def run(self, path, raster_ds):
@@ -1281,8 +1306,8 @@ class Melt(Operation):
 class ShadingOp(Operation):
     """ Compute Slope and Aspect from a DEM """
 
-    name = 'Shading'
-    op_id = 'shading'
+    title = 'Shading'
+    name = 'shading'
     output_type = 'shading'
 
     def run(self, path, elevation_ds):

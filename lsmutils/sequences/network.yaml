@@ -1,31 +1,36 @@
 !OpSequence
-idstr: network
-name: Stream Network Definition by Drop Analysis
+name: network
+title: Stream Network Definition by Drop Analysis
 doc: Defines the stream based on the Peuker Douglass algorithm, then computes the stream network.
 operations:
-  - name: seq::source-area
+  - !Operation
+    name: source-area
     in:
       dem: dem
     out:
       no-sinks: no-sinks
       flow-direction: flow-direction
       source-area: source-area
-  - name: eccw-to-ncw
+  - !Operation
+    name: eccw-to-ncw
     in:
       flow-dir-ds: flow-direction
     out:
       flow-direction: flow-dir-for-distance
-  - name: flow-distance-euclidean
+  - !Operation
+    name: flow-distance-euclidean
     in:
       flow-dir-ds: flow-dir-for-distance
     out:
       flow-distance: flow-distance
-  - name: stream-definition-threshold
+  - !Operation
+    name: stream-definition-threshold
     in:
       flow-acc-ds: source-area
     out:
       stream-raster: stream-definition-threshold
-  - name: snap-outlet
+  - !Operation
+    name: snap-outlet
     in:
       flow-dir-ds: flow-direction
       stream-ds: stream-definition-threshold

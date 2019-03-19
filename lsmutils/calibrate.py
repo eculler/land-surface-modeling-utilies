@@ -17,7 +17,7 @@ class Case:
 
     @property
     def input(self):
-        input = self.cfg['requires'].copy()
+        input = self.cfg['in'].copy()
         input.update(self.dir_structure.datasets)
         return input
 
@@ -106,7 +106,7 @@ class CaseDirStructure(yaml.YAMLObject):
         # Add input files
         self.paths.update({
             key: path.configure(cfg, file_id=key)
-            for key, path in cfg['requires'].items()
+            for key, path in cfg['in'].items()
             if hasattr(path, 'file_id')
         })
 
