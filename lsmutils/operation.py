@@ -193,11 +193,11 @@ class MergeOp(Operation):
                         [ds.filepath.path for ds in raster_list])
         return {'merged': GDALDataset(self.paths['merged'])}
 
-class AggregateOp(Operation):
+class AlignOp(Operation):
 
-    name = 'Aggregate'
-    op_id = 'agg'
-    output_types = [OutputType('aggregated', 'gtif')]
+    name = 'Align Dataset'
+    op_id = 'align'
+    output_types = [OutputType('aligned', 'gtif')]
 
     def run(self, input_ds, boundary_ds=None, 
             resolution=CoordProperty(x=1/240., y=1/240.), grid_res=None,
@@ -208,8 +208,8 @@ class AggregateOp(Operation):
             grid_box = boundary_ds.gridcorners(
                     grid_res, padding=padding).warp_output_bounds
         elif not bbox is None:
-            grid_box = [bbox[0] - padding.x, bbox[1] - padding.x,
-                        bbox[2] + padding.y, bbox[3] + padding.y]
+            grid_box = [bbox.llc.x - padding.x, bbox.llc.y - padding.y,
+                        bbox.urc.x + padding.x, bbox.urc.y + padding.y]
         else:
             grid_box = input_ds.gridcorners(
                     grid_res, padding=padding).warp_output_bounds
@@ -222,7 +222,7 @@ class AggregateOp(Operation):
         )
         gdal.Warp(self.paths['aggregated'].path, input_ds.dataset, 
                   options=agg_warp_options)
-        return {'aggregated': GDALDataset(self.paths['aggregated'])}
+        return {'aligned': GDALDataset(self.paths['aligned'])}
     
 class ClipOp(Operation):
 
@@ -1080,7 +1080,7 @@ class LatLonToShapefileOp(Operation):
         output_ds = BoundaryDataset(self.path)
         return output_ds
 
-    
+
 class UpscaleFlowDirectionOp(Operation):
 
     name = 'Final Resolution Flow Direction'

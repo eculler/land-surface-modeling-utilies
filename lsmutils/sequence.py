@@ -112,6 +112,8 @@ class OpSeqLoader(object):
         for resource in pkg_resources.resource_listdir(__name__, self.loc):
             res_path = '/'.join([self.loc, resource])
             opseq_def = pkg_resources.resource_string(__name__, res_path)
+            
+            logging.debug('Loading %s sequence', resource)
             opseq = yaml.load(opseq_def)
             setattr(self, opseq.idstr, opseq)
 
