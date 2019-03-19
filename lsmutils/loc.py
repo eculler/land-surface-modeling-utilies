@@ -17,7 +17,6 @@ class Path(yaml.YAMLObject):
     default_ext = ''
     default_name_fmt='{basin_id}_{file_id}'
     netcdf_variable = ''
-    proj = ''
 
     @classmethod
     def from_yaml(cls, loader, node):
@@ -27,7 +26,7 @@ class Path(yaml.YAMLObject):
     def __init__(self, file_id='',
                  filename='', dirname='',
                  default_ext='', default_name_fmt='',
-                 netcdf_variable='', proj=''):
+                 netcdf_variable=''):
         """
         Set path variables
         """
@@ -41,7 +40,6 @@ class Path(yaml.YAMLObject):
             default_name_fmt if default_name_fmt else self.default_name_fmt)
         self.netcdf_variable = (
             netcdf_variable if netcdf_variable else self.netcdf_variable)
-        self.proj = (proj if proj else self.proj)
 
     def configure(self, cfg, file_id='', dirname=''):
         self.file_id = file_id if file_id else self.file_id
@@ -216,7 +214,7 @@ class Path(yaml.YAMLObject):
         # Try raster
         try:
             filetype = self.default_ext if self.default_ext else ''
-            dataset = GDALDataset(path, filetype=filetype, proj=self.proj)
+            dataset = GDALDataset(path, filetype=filetype)
             if not dataset.dataset is None:
                 return dataset
             print('{} failed to load as raster'.format(path.path))
@@ -233,8 +231,7 @@ class Path(yaml.YAMLObject):
                 dirname=self.dirname,
                 default_ext=self.default_ext,
                 default_name_fmt=self.default_name_fmt,
-                netcdf_variable=self.netcdf_variable,
-                proj=self.proj)
+                netcdf_variable=self.netcdf_variable)
         if self.env:
             new_path.configure(self.env)
         return new_path
@@ -261,7 +258,7 @@ class TilePath(Path):
     def __init__(self, file_id='',
                  bbox=[], filename_fmt='', dirname='',
                  default_ext='', default_name_fmt='',
-                 netcdf_variable='', proj=''):
+                 netcdf_variable=''):
         tiles = []
         for lon in range(int(bbox[0]), int(bbox[2])):
             for lat in range(int(bbox[1]), int(bbox[3])):
@@ -273,8 +270,7 @@ class TilePath(Path):
                 filename=filename, dirname=dirname,
                 default_ext=default_ext,
                 default_name_fmt=default_name_fmt,
-                netcdf_variable=netcdf_variable,
-                proj=proj)
+                netcdf_variable=netcdf_variable)
 
         # Filter out files that don't exist
         self.filename = [self.filename[i] for i in range(len(self.path))

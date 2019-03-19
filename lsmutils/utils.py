@@ -123,15 +123,14 @@ class CoordProperty(yaml.YAMLObject):
     def __format__(self, format_spec):
         return '{}_{}'.format(self.x, self.y)
 
-
 class BBox(yaml.YAMLObject):
     
     yaml_tag = u"!BBox"
 
-    def __init__(self, llcorner, urcorner):
-        self.llc = llcorner
-        self.urc = urcorner
-        
+    def __init__(self, llc, urc):
+        self.llc = llc
+        self.urc = urc
+
     @classmethod
     def from_yaml(cls, loader, node):
         fields = loader.construct_mapping(node, deep=True)

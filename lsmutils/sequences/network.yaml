@@ -2,92 +2,33 @@
 idstr: network
 name: Stream Network Definition by Drop Analysis
 doc: Defines the stream based on the Peuker Douglass algorithm, then computes the stream network.
-input:
-  dem: dem
-  outlet: outlet
-  soil-depth: soil-depth
-tree:
-  - label: no-sinks
-    operation: remove-sinks
+operations:
+  - name: seq::source-area
     in:
-      input-ds: dem
+      dem: dem
     out:
       no-sinks: no-sinks
-  - label: flow-direction
-    operation: flow-direction
-    in:
-      dem-ds: no-sinks
-    out:
       flow-direction: flow-direction
-  - label: flow-accumulation
-    operation: flow-accumulation
-    in:
-      flow-dir-ds: flow-direction
-    out:
-      flow-accumulation: flow-accumulation
-  - label: flow-dir-for-distance
-    operation: rvic-to-taudem
+      source-area: source-area
+  - name: eccw-to-ncw
     in:
       flow-dir-ds: flow-direction
     out:
       flow-direction: flow-dir-for-distance
-  - label: flow-distance
-    operation: flow-distance-euclidean
+  - name: flow-distance-euclidean
     in:
       flow-dir-ds: flow-dir-for-distance
-  - label: stream-definition-threshold
-    operation: stream-definition-threshold
+    out:
+      flow-distance: flow-distance
+  - name: stream-definition-threshold
     in:
-      flow-acc-ds: flow-accumulation
-  - label: outlet-on-stream
-    operation: snap-outlet
+      flow-acc-ds: source-area
+    out:
+      stream-raster: stream-definition-threshold
+  - name: snap-outlet
     in:
       flow-dir-ds: flow-direction
       stream-ds: stream-definition-threshold
       outlet-ds: outlet
-  - label: labelled-outlet
-    operation: label-outlet
-    in:
-      outlet-ds: outlet-on-stream
     out:
-      labelled-outlet: labelled-outlet
-  - label: stream-definition
-    operation: stream-def-pd
-    in:
-      no-sinks-ds: no-sinks
-      flow-dir-ds: flow-direction
-      flow-accum-ds: flow-accumulation
-      outlet-ds: labelled-outlet
-    out:
-      stream-definition: stream-definition
-  - label: stream-network
-    operation: stream-network
-    in:
-      no-sinks-ds: no-sinks
-      flow-dir-ds: flow-direction
-      flow-accum-ds: flow-accumulation
-      outlet-ds: labelled-outlet
-      pd-stream-def-ds: stream-definition
-    out:
-      order: order
-      tree: tree
-      coord: coord
-      network: stream-network
-      watershed: watershed
-  - label: dhsvm-network
-    operation: dhsvm-network
-    in:
-      tree: tree
-      coord: coord
-      network: stream-network
-      watershed: watershed
-      flow-distance-ds: flow-distance
-      soil-depth-ds: soil-depth
-    out:
-      network: network
-      map: map
-      state: state
-out:
-  - network
-  - map
-  - state
+      outlet-on-stream: outlet-on-stream

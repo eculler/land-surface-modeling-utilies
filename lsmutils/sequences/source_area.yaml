@@ -1,29 +1,20 @@
 !OpSequence
 idstr: source-area
 name: Source Area
-doc: Calculates flow accumulation / source area of an elevation dataset.
-input:
-  dem: dem
-tree:
-  - label: no-sinks
-    operation: remove-sinks
+doc: Calculates the flow accumulation / source area of an elevation dataset.
+operations:
+  - name: remove-sinks
     in:
       input-ds: dem
     out:
       no-sinks: no-sinks
-  - label: flow-direction
-    operation: flow-direction
+  - name: flow-direction
     in:
       dem-ds: no-sinks
     out:
       flow-direction: flow-direction
-  - label: flow-accumulation
-    operation: flow-accumulation
+  - name: source-area
     in:
       flow-dir-ds: flow-direction
     out:
-      flow-accumulation: flow-accumulation
-out:
-  - no-sinks
-  - flow-direction
-  - flow-accumulation
+      source-area: source-area

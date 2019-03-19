@@ -1,6 +1,7 @@
-import yaml
+import copy
 import logging
 import pkg_resources
+import yaml
 
 from .calibrate import CaseCollection
 from .operation import Operation
@@ -13,14 +14,20 @@ class OperationSequence(yaml.YAMLObject):
 
     yaml_tag = u'!OpSequence'
 
-    def __init__(self, idstr, name, doc, tree, out, input, netcdf=None):
-        self.tree = tree
+    def __init__(self, idstr, name, doc, operations):
         self.idstr = idstr
         self.name = name
         self.doc = doc
-        self.input = input
-        self.out = out
-        self.netcdf = netcdf
+        self.operations = operations
+
+        self.computes = [
+            output for op in operations for output in op['out'].values()]
+        self.requires = [
+            req for op in operations for req in op['in'].values()
+            if not req in self.computes]
+        logging.debug('%s operation requires %s', self.name, self.requires)
+        logging.debug('%s operation computes %s', self.name, self.computes)
+        
 
     @classmethod
     def from_yaml(cls, loader, node):
@@ -29,17 +36,19 @@ class OperationSequence(yaml.YAMLObject):
     
     def __repr__(self):
         repr_fmt = ('OperationSequence(name={name}, id={idstr}, ' +
-                    'doc={doc}, tree={tree})')
+                    'doc={doc}, operations={operations})')
         return repr_fmt.format(name=self.name, idstr=self.idstr,
-                               doc=self.doc, tree=self.tree)
-
+                               doc=self.doc, operations=self.operations)
+    
     @property
     def layers(self):
         next_ids = self.out
         self._layers = []
         while next_ids:
-            this_layer = [op for op in self.tree
-                          if any([i in op['out'] for i in list(next_ids)])]
+            this_layer = [
+                op for op in self.operations
+                if any([id in op['out'].values() for id in list(next_ids)])]
+            
             # Remove operations in this layer from subsequent layers
             current_labels = [op['label'] for op in this_layer]
             self._layers = [
@@ -53,33 +62,42 @@ class OperationSequence(yaml.YAMLObject):
         logging.info('Operation sequence layers: \n{}'.format(self._layers))
         return self._layers
         
-    def run(self, case, op_in, op_out):
-        logging.info('Running operation {}'.format(self.idstr))
-        input = op_in.copy()
-        input.update({op_key: case.input[in_key] 
+    def run(self, case, op_in, op_out, seqs):
+        logging.info('Running sequence {}'.format(self.idstr))
+        
+        inpt = op_in.copy()
+        inpt.update({op_key: case.input[in_key] 
                       for op_key, in_key in op_in.items()
                       if in_key in case.input})
+        
         namespace = {}
         paths = {}
         
-        for req, location in self.input.items():
+        for req, location in inpt.items():
             # Configuration may supply a file to skip required module
-            if location in input:
-                namespace[req] = input[location]
+            if location in inpt:
+                namespace[req] = inpt[location]
                 continue
             
             # Run dependency sequences
             logging.debug('Processing dependency %s', location)
             (module, key) = location.split('::')
-            if not module in input:
-                input[module] = seqs[module].run(case, input)
+            if not module in inpt:
+                inpt[module] = seqs[module].run(case, input)
 
             # Build flat namespace
             namespace[req] = input[module][key]
 
         for lyr in self.layers:
             for op in lyr:
-                logging.debug('Preparing to run %s', op['label'])
+                logging.debug('Preparing to run %s', op['name'])
+                
+                if op['name'].startswith('seq::'):
+                    seq_name = op['name'].replace('seq::', '')
+                    case = getattr(seqs, seq_name).run(
+                        case, inpt, op['out'], seqs)
+                continue
+            
                 inpt = {key.replace('-', '_'): namespace[value]
                         for key, value in op['in'].items()}
  
@@ -101,6 +119,8 @@ class OperationSequence(yaml.YAMLObject):
         
         return case
 
+        return case
+
 class OpSeqLoader(object):
 
     loc = 'sequences'
@@ -110,59 +130,42 @@ class OpSeqLoader(object):
 
     def load(self):
         for resource in pkg_resources.resource_listdir(__name__, self.loc):
-            res_path = '/'.join([self.loc, resource])
-            opseq_def = pkg_resources.resource_string(__name__, res_path)
-            
-            logging.debug('Loading %s sequence', resource)
-            opseq = yaml.load(opseq_def)
-            setattr(self, opseq.idstr, opseq)
+            if resource.endswith('.yaml'):
+                logging.debug('Loading %s', resource)
+                res_path = '/'.join([self.loc, resource])
+                opseq_def = pkg_resources.resource_string(__name__, res_path)
+                opseq = yaml.load(opseq_def)
+                setattr(self, opseq.idstr, opseq)
 
     def __getitem__(self, key):
         return getattr(self, key)
-                    
-seqs = OpSeqLoader()
 
 def run_cfg(cfg):
     collection = CaseCollection(cfg)
     cases = collection.cases
     case = cases[0]
+
+    seqs = OpSeqLoader()
     
-    for op in cfg['operations']:
-        if 'many' in op.keys():
-            opcls = Operation.__children__()[op['operation']]
-            length = len(case.input[op['in'][op['many'][0]]])
-            for i in range(length):
-                inpt = op['in'].copy()
-                inpt = {key.replace('-', '_'): value
-                            for key, value in inpt.items()}
-                inpt.update({key.replace('-', '_'):
-                        case.input[value][i] if key in op['many']
-                            else case.input[value]
-                        for key, value in op['in'].items()
-                        if value in case.input})
-                run_id = case.input[op['in'][
-                        op['many'][0]]][i].filepath.filename
-                opcls(case.cfg, list(op['out'].values())[0],
-                      run_id=run_id, **inpt).save()
+    master_seq = OperationSequence(
+        'main',
+        'Main Sequence',
+        '',
+        cfg['operations']
+    )
 
-        # Run a pre-defined operation sequence
-        elif op['operation'].startswith('seq::'):
-            op_name = op['operation'].replace('seq::', '')
-            case = getattr(seqs, op_name).run(case, op['in'], op['out'])
+    logging.info('Operations to run:')
+    for op in master_seq.operations:
+        logging.info('  %s', op['name'])
+        for key, value in op['in'].items():
+            logging.info('    I: %s <- %s', key, value)
+        for key, value in op['out'].items():
+            logging.info('    O: %s <- %s', key, value)
 
-        else:
-            opcls = Operation.__children__()[op['operation']]
-            inpt = op['in'].copy()
-            inpt = {key.replace('-', '_'): value
-                            for key, value in inpt.items()}
-            inpt.update({key.replace('-', '_'): case.input[value]
-                        for key, value in op['in'].items()
-                        if value in case.input})
-            opres = opcls(case.cfg, list(op['out'].values())[0],
-                          **inpt).save()
-            for ot, ds in opres.items():
-                case.dir_structure.update_datasets({
-                    op['out'][ot]: ds for ot, ds in opres.items()
-                    if ot in op['out']})
-                
+    case = master_seq.run(
+            case,
+            {key: key for key in master_seq.requires},
+            {key: key for key in master_seq.computes},
+            seqs
+    )
     return case

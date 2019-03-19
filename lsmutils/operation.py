@@ -130,7 +130,7 @@ class Operation(metaclass=OperationMeta):
                         self.attributes['resolution'],
                         self.attributes['resolution'])
             else:
-                self.resolution = CoordProperty(0, 0)
+                self._resolution = CoordProperty(0, 0)
         return self._resolution
         
     def run(self, **kwargs):
@@ -240,17 +240,75 @@ class ClipOp(Operation):
         gdal.Warp(path, input_ds.dataset, options=clip_warp_options)
         return GDALDataset(self.path)
 
-class ReProjectOp(Operation):
+class ReprojectRasterOp(Operation):
 
     name = 'Reproject raster'
-    op_id = 'reproject'
-    output_types = ['reprojected']
+    op_id = 'reproject-raster'
+    output_types = [OutputType('reprojected', 'gtif')]
 
     def run(self, input_ds, proj):
         agg_warp_options = gdal.WarpOptions(dstSRS = proj)
         gdal.Warp(self.paths['reprojected'].path, input_ds.dataset, 
                   options=agg_warp_options)
         return {'reprojected': GDALDataset(self.paths['reprojected'])}
+
+class ReprojectVectorOp(Operation):
+
+    name = 'Reproject Vector Dataset'
+    op_id = 'reproject-vector'
+    output_types = [OutputType('reprojected', 'shp')]
+
+    def run(self, input_ds, epsg):
+        reproj_ds = BoundaryDataset(
+                self.paths['reprojected'], update=True).new()
+
+        for layer in input_ds.layers:
+            # SRS transform
+            in_srs = layer.GetSpatialRef()
+            out_srs = osr.SpatialReference()
+            out_srs.ImportFromEPSG(epsg)
+            transform = osr.CoordinateTransformation(in_srs, out_srs)
+
+            # create the output layer
+            reproj_layer = reproj_ds.dataset.CreateLayer(
+                    "{}_{}".format(layer.GetName(), epsg),
+                    geom_type=layer.GetGeomType())
+
+            # add fields
+            layer_defn = layer.GetLayerDefn()
+            for i in range(0, layer_defn.GetFieldCount()):
+                field_defn = layer_defn.GetFieldDefn(i)
+                reproj_layer.CreateField(field_defn)
+
+            # loop through the input features
+            reproj_layer_defn = reproj_layer.GetLayerDefn()
+            feature = layer.GetNextFeature()
+            while feature:
+                # reproject the input geometry
+                geom = feature.GetGeometryRef()
+                geom.Transform(transform)
+                
+                # create a new feature with same geometry and attributes
+                reproj_feature = ogr.Feature(reproj_layer_defn)
+                reproj_feature.SetGeometry(geom)
+                for j in range(0, reproj_layer_defn.GetFieldCount()):
+                    reproj_feature.SetField(
+                            reproj_layer_defn.GetFieldDefn(j).GetNameRef(),
+                            feature.GetField(j))
+                
+                # add the feature to the shapefile
+                reproj_layer.CreateFeature(reproj_feature)
+                    
+                # dereference the features and get the next input feature
+                reproj_feature = None
+                feature = layer.GetNextFeature()
+                    
+        # Save and close the shapefiles
+        del input_ds.dataset
+        del reproj_ds.dataset
+
+        reproj_ds = BoundaryDataset(self.paths['reprojected'])
+        return {'reprojected': reproj_ds}
 
 class SumOp(Operation):
 
@@ -440,7 +498,7 @@ class FlowDirectionOp(Operation):
 
 class FlowDistanceOp(Operation):
 
-    output_types = [OutputType('flow_dist', 'gtif')]
+    output_types = [OutputType('flow-distance', 'gtif')]
     
     def dir2dist(self, lat, lon, direction, res, nodata):
         distance = direction.astype(np.float64)
@@ -479,7 +537,7 @@ class FlowDistanceOp(Operation):
         distance = distance.astype(np.float32)
         flow_dist_ds.array = distance
         
-        return {'flow_dist': flow_dist_ds}
+        return {'flow-distance': flow_dist_ds}
 
 
 class FlowDistanceHaversineOp(FlowDistanceOp):
@@ -506,22 +564,22 @@ class FlowDistanceEuclideanOp(FlowDistanceOp):
     def distance(self, lon1, lat1, lon2, lat2):
         return np.sqrt((lon2 - lon1)**2 + (lat2 - lat1)**2)
     
-class FlowAccumulationOp(Operation):
+class SourceAreaOp(Operation):
 
-    name = 'Flow Accumulation'
-    op_id = 'flow-accumulation'
-    output_types = [OutputType('flow-accumulation', 'tif')]
+    name = 'Source Area/Flow Accumulation'
+    op_id = 'source-area'
+    output_types = [OutputType('source-area', 'tif')]
 
     def run(self, flow_dir_ds):
         subprocess.call([
             'aread8',
             '-p', flow_dir_ds.filepath.path,
-            '-ad8', self.paths['flow-accumulation'].no_ext,
+            '-ad8', self.paths['source-area'].no_ext,
             '-nc'
         ])
-        flow_accumulation_ds = GDALDataset(self.paths['flow-accumulation'])
-        flow_accumulation_ds.nodata = 0
-        return {'flow-accumulation': flow_accumulation_ds}
+        source_area_ds = GDALDataset(self.paths['source-area'])
+        source_area_ds.nodata = 0
+        return {'source-area': source_area_ds}
     
     
 class StreamDefinitionByThresholdOp(Operation):
@@ -531,10 +589,10 @@ class StreamDefinitionByThresholdOp(Operation):
     op_id = 'stream-definition-threshold'
     output_types = [OutputType('stream-raster', 'tif')]
 
-    def run(self, flow_acc_ds):
-        threshold = np.percentile(flow_acc_ds.array, 98)
+    def run(self, source_area_ds):
+        threshold = np.percentile(source_area_ds.array, 98)
         subprocess.call(['threshold',
-                         '-ssa', flow_acc_ds.filepath.path,
+                         '-ssa', source_area_ds.filepath.path,
                          '-thresh', '{:.1f}'.format(threshold),
                          '-src', self.paths['stream-raster'].no_ext])
         stream_raster_ds = GDALDataset(
@@ -649,7 +707,7 @@ class PeukerDouglasStreamDefinitionOp(Operation):
         OutputType('stream-definition', 'tif')
     ]
     
-    def run(self, no_sinks_ds, flow_dir_ds, flow_accum_ds, outlet_ds):
+    def run(self, no_sinks_ds, flow_dir_ds, source_area_ds, outlet_ds):
         # The threshold range should be selected based on the raster size
         # Something like 10th to 99th percentile of flow accumulation?
 
@@ -664,7 +722,7 @@ class PeukerDouglasStreamDefinitionOp(Operation):
         subprocess.call(['dropanalysis',
                          '-p', flow_dir_ds.filepath.path,
                          '-fel', no_sinks_ds.filepath.path,
-                         '-ad8', flow_accum_ds.filepath.path,
+                         '-ad8', source_area_ds.filepath.path,
                          '-o', outlet_ds.filepath.path,
                          '-ssa', self.paths['ssa'].path,
                          '-drp', self.paths['drop-analysis'].path,
@@ -1053,16 +1111,16 @@ class LatLonToShapefileOp(Operation):
     
     name = 'Coordinate to Shapefile'
     op_id = 'coordinate-to-shapefile'
-    output_type = 'shapefile'
+    output_types = [OutputType('shapefile', 'shp')]
 
-    def run(self, path, coordinate, idstr='coordinate'):
+    def run(self, coordinate, idstr='coordinate'):
         # Get spatial reference
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(coordinate.epsg)
 
         # Create layer
-        output_ds = BoundaryDataset(self.path, update=True).new()
-        output_layer = output_ds.dataset.CreateLayer(
+        shp_ds = BoundaryDataset(self.paths['shapefile'], update=True).new()
+        output_layer = shp_ds.dataset.CreateLayer(
                 idstr, srs=srs, geom_type=ogr.wkbPoint)
 
         # Create geometry
@@ -1076,9 +1134,9 @@ class LatLonToShapefileOp(Operation):
         output_layer.CreateFeature(output_feature)
 
         # Clean up'
-        output_ds.dataset.Destroy()
-        output_ds = BoundaryDataset(self.path)
-        return output_ds
+        shp_ds.dataset.Destroy()
+        shp_ds = BoundaryDataset(self.paths['shapefile'])
+        return {'shapefile': shp_ds}
 
 
 class UpscaleFlowDirectionOp(Operation):
