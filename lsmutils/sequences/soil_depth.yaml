@@ -1,0 +1,28 @@
+!OpSequence
+title: Soil Depth
+doc: Estimates soil depth from slope, elevation, and source area.
+operations:
+  - !OpSequence
+    name: source-area
+    in:
+      dem: dem
+    out:
+      no-sinks: no-sinks
+      flow-direction: flow-direction
+      source-area: source-area
+  - !Operation
+    name: slope
+    in:
+      elevation-ds: no-sinks
+    out:
+      slope: slope
+  - !Operation
+    name: soil-depth
+    in:
+      slope-ds: slope
+      source-ds: source-area
+      elev-ds: dem
+      min-depth: soil-min-depth
+      max-depth: soil-max-depth
+    out:
+      soil-depth: soil-depth

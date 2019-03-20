@@ -10,14 +10,16 @@ import ogr
 import os
 import osr
 import pandas as pd
+import random
 import re
 import shutil
+import string
 import subprocess
 import yaml
 import collections
 
 from .loc import Path, ScriptPath
-from .dataset import GDALDataset, BoundaryDataset
+from .dataset import GDALDataset, BoundaryDataset, DataFrameDataset
 from .utils import CoordProperty
 
 OutputType = collections.namedtuple('OutputType', ['key', 'filetype'])
@@ -49,7 +51,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     output_types = NotImplemented
     filename_format = '{output_label}'
 
-    start_msg = 'Calculating {title}'
+    start_msg = 'Calculating {title} with data:'
     end_msg = '{title} saved at {path}'
     error_msg = '{title} calculation FAILED'
 
@@ -64,7 +66,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         child_cls = cls.__children__()[fields.pop('name')]
         return child_cls(**fields)
     
-    def configure(self, run_config, paths=[], **kwargs):
+    def configure(self, run_config, paths={}, **kwargs):
         logging.debug('Configuring %s operation', self.name)
         
         self._resolution = None
@@ -90,19 +92,29 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         self.filenames = {
             ot.key: self.filename_format.format(
                     output_type=ot.key,
-                    output_label=self.out[ot.key],
+                    output_label=self.get_label(ot.key),
                     **self.attributes).replace('.', '-')
             for ot in self.output_types}
 
         logging.debug('Resolving %s paths', self.name)
-        if paths:
-            self.paths = paths
-        else:
-            self.paths = {
-                ot.key: Path(
-                        filename=self.filenames[ot.key],
-                        default_ext=ot.filetype).configure(run_config)
-                for ot in self.output_types}
+        self.paths = {
+            ot.key: Path(
+                    filename=self.filenames[ot.key],
+                    default_ext=ot.filetype).configure(run_config)
+            for ot in self.output_types}
+        
+        print(self.out)
+        print({key: loc.path for key, loc in self.paths.items()})
+        alt_paths = {}
+        for key, label in self.out.items():
+            if label in paths:
+                if not paths[label].default_ext:
+                    for ot in self.output_types:
+                        if key == ot.key:
+                            paths[label].default_ext = ot.filetype
+                            alt_paths[key] = paths.pop(label)
+        self.paths.update(alt_paths)
+        print({key: loc.path for key, loc in self.paths.items()})
 
         for key, pth in self.paths.items():
             logging.debug('%s path at %s', key, pth.path)
@@ -111,6 +123,15 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         self.datasets = []
         
         return self
+
+    def get_label(self, output_type):
+        if output_type in self.out:
+            return self.out[output_type]
+        else:
+            idstr = ''.join([
+                random.choice(string.ascii_letters + string.digits)
+                for n in range(6)])
+            return output_type + '_' + idstr
 
     def relabel(self, new_labels):
         for pykey, dsname in self.inpt.items():
@@ -157,6 +178,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
 
     def saveas(self, filetypes={}, datatypes={}):
         logging.info(self.start_msg.format(title=self.title))
+        for key, value in self.kwargs.items():
+            if hasattr(value, 'filepath'):
+                value = value.filepath.path
+            logging.info('    %s <- %s', key, value)
         
         # Change path extensions to match working extension
         for key, filetype in filetypes.items():
@@ -182,9 +207,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             self.datasets[key].saveas(filetype, datatype=datatype)
 
         if self.datasets:
-            for key, pth in self.paths.items():
+            for key, loc in self.paths.items():
                 logging.info(
-                        self.end_msg.format(title=self.title, path=pth.path))
+                        self.end_msg.format(title=self.title,
+                                            path=loc.path))
         else:
             logging.error(self.error_msg.format(title=self.title))
 
@@ -536,12 +562,12 @@ class FlowDistanceOp(Operation):
                 lat, lon, direction, res, flow_dir_ds.nodata)
 
         flow_dist_ds = GDALDataset(
-                self.paths['flow_dist'], template=flow_dir_ds)
+                self.paths['flow-distance'], template=flow_dir_ds)
         
         # Fix masking side-effects - not sure why this needs to be done
         flow_dist_ds.nodata = -9999
         distance = distance.filled(flow_dist_ds.nodata)
-        distance[distance==None] = dist_ds.nodata
+        distance[distance==None] = flow_dist_ds.nodata
         distance = distance.astype(np.float32)
         flow_dist_ds.array = distance
         
@@ -613,18 +639,20 @@ class MoveOutletsToStreamOp(Operation):
     
     title = 'Move Outlets to Streams'
     name = 'snap-outlet'
-    output_types = [OutputType('outlet-on-stream', 'tif')]
+    output_types = [
+        OutputType('outlet-on-stream-nosrs', 'shp'),
+        OutputType('outlet-on-stream', 'shp')
+    ]
     
     def run(self, flow_dir_ds, stream_ds, outlet_ds):
-        tmp = TempPath('snapped', default_ext='shp', **self.run_config)
         subprocess.call(['moveoutletstostrm',
                          '-p', flow_dir_ds.filepath.path,
                          '-src', stream_ds.filepath.path,
                          '-o', outlet_ds.filepath.path,
-                         '-om', tmp.path])
+                         '-om', self.paths['outlet-on-stream-nosrs'].path])
         
         # Copy spatial reference from original outlet
-        in_ds = BoundaryDataset(tmp)
+        in_ds = BoundaryDataset(self.paths['outlet-on-stream-nosrs'])
         out_ds = BoundaryDataset(self.paths['outlet-on-stream'],
                                  update=True).new()
         
@@ -653,7 +681,7 @@ class LabelGagesOp(Operation):
 
     title = 'Labeled Gages'
     name = 'label-outlet'
-    output_types = [OutputType('labelled-outlet', 'gtif')]
+    output_types = [OutputType('labelled-outlet', 'shp')]
 
     def run(self, outlet_ds):
         ## Fix this - modify dataset at the new location, not the old
@@ -719,7 +747,7 @@ class PeukerDouglasStreamDefinitionOp(Operation):
         # The threshold range should be selected based on the raster size
         # Something like 10th to 99th percentile of flow accumulation?
 
-        ## This is a three-step process - first compute the source area
+        ## This is a three-step process - first compute the D8 source area
         subprocess.call(['aread8',
                          '-p', flow_dir_ds.filepath.path,
                          '-o', outlet_ds.filepath.path,
@@ -886,14 +914,14 @@ class StreamNetworkOp(Operation):
         'contributing_area'
     ]
     
-    def run(self, no_sinks_ds, flow_dir_ds, flow_accum_ds,
+    def run(self, no_sinks_ds, flow_dir_ds, source_area_ds,
             pd_stream_def_ds, outlet_ds):
         
         subprocess.call([
             'streamnet',
             '-p', flow_dir_ds.filepath.path,
             '-fel', no_sinks_ds.filepath.path,
-            '-ad8', flow_accum_ds.filepath.path,
+            '-ad8', source_area_ds.filepath.path,
             '-src', pd_stream_def_ds.filepath.path,
             '-o', outlet_ds.filepath.path,
             '-ord', self.paths['order'].path,
@@ -993,9 +1021,9 @@ class DHSVMNetworkOp(Operation):
         # Channel ID
         channelid_arr = watershed_ds.array
         nodata = -99
-        channelid_arr[channelid_arr == channelid_ds.nodata] = nodata
+        channelid_arr[channelid_arr == watershed_ds.nodata] = nodata
 
-        x, y = np.meshgrid(channelid_ds.cgrid.x, channelid_ds.cgrid.y)
+        x, y = np.meshgrid(watershed_ds.cgrid.x, watershed_ds.cgrid.y)
         inds = np.indices(channelid_arr.shape)
         channelid_df = pd.DataFrame.from_records(
                 {'x': x.flatten(),
@@ -1070,7 +1098,7 @@ class DHSVMNetworkOp(Operation):
         
         map_df[self.map_colnames].to_csv(self.paths['map'].path, **csvargs)
         
-        net_df[self.state_colnames].sort(['order']).to_csv(
+        net_df.sort_values(['order'])[self.state_colnames].to_csv(
                 self.paths['state'].path, **csvargs)
                 
         return {
@@ -1211,6 +1239,7 @@ class ConvertOp(Operation):
                 flow_dir_ds.array==flow_dir_ds.nodata,
                 flow_dir_ds.array)
         input_array.set_fill_value(flow_dir_ds.nodata)
+        
         converted = convert_array(input_array)
         converted_ds.array = converted.filled()
         return {'flow-direction': converted_ds}
@@ -1219,7 +1248,7 @@ class NorthCWToEastCCWOp(ConvertOp):
     
     title = 'North CW (RVIC) to East CCW (TauDEM) Flow Directions'
     name = 'ncw-to-eccw'
-    filename_format = '{seq_id}_eastccw_{output_type}'
+    filename_format = 'eastccw_{output_label}'
 
     def convert(self, array):
         return (3 - array) % 8 + 1
@@ -1229,7 +1258,7 @@ class EastCCWToNorthCWOp(ConvertOp):
     
     title = 'East CCW (TauDEM) to North CW (RVIC) Flow Directions'
     name = 'eccw-to-ncw'
-    filename_format = '{seq_id}_northcw_{output_type}'
+    filename_format = 'northcw_{output_label}'
 
     def convert(self, array):
         return (3 - array) % 8 + 1

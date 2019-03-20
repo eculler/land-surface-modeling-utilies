@@ -73,6 +73,7 @@ class CaseDirStructure(yaml.YAMLObject):
         self.output_files = {}
         layer = [Directory(path=[name], contents=contents)
                  for (name, contents) in self.structure.items()]
+        
         while layer:
             next_layer = []
             for directory in layer:
@@ -86,6 +87,7 @@ class CaseDirStructure(yaml.YAMLObject):
                     key: directory.path
                     for key, value in directory.contents.items()
                     if hasattr(value, 'file_id')})
+                
                 # Save contents of each directory
                 self.path_info.update(directory.contents)
 
@@ -93,15 +95,17 @@ class CaseDirStructure(yaml.YAMLObject):
                 next_layer += [
                     Directory(directory.path + [key], value)
                     for key, value in directory.contents.items()]
+                    
             layer = next_layer
 
     def configure(self, cfg):
         # Add output files
-        self.paths.update({
+        self.output_files = {
             key: self.path_info[key].configure(
                     cfg, file_id=key, dirname=os.path.join(*loc))
             for key, loc in self.output_files.items()
-        })
+        }
+        self.paths.update(self.output_files)
 
         # Add input files
         self.paths.update({

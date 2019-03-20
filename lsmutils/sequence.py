@@ -9,21 +9,8 @@ from .calibrate import CaseCollection
 from .operation import Operation
 from .utils import write_netcdf
 
-class OpSequenceMeta(yaml.YAMLObjectMetaclass):
 
-    def __children__(cls):
-        loc = 'sequences'
-        children = {}
-        for resource in pkg_resources.resource_listdir(__name__, loc):
-            if resource.endswith('.yaml'):
-                logging.debug('Loading %s', resource)
-                res_path = '/'.join([loc, resource])
-                opseq_def = pkg_resources.resource_string(__name__, res_path)
-                opseq = yaml.load(opseq_def)
-                children[opseq.name] = opseq
-        return children
-
-class OperationSequence(yaml.YAMLObject, metaclass=OpSequenceMeta):
+class OperationSequence(yaml.YAMLObject):
     """
     Loads a sequence of GIS operations from a yaml file
     """
@@ -55,16 +42,18 @@ class OperationSequence(yaml.YAMLObject, metaclass=OpSequenceMeta):
 
         logging.debug('%s operation computes %s', self.name, self.computes)
         
-
     @classmethod
     def from_yaml(cls, loader, node):
         seq_class = cls
         fields = loader.construct_mapping(node, deep=True)
 
         if not 'operations' in fields:
-            obj = cls.__children__()[fields['name']]
-            obj.configure(fields['in'], fields['out'])
-            return obj
+            seq_name = fields['name'].replace('-', '_') + '.yaml'
+            seq_path = '/'.join(['sequences', seq_name])
+            seq_def = pkg_resources.resource_string(__name__, seq_path)
+            seq = yaml.load(seq_def)
+            seq.configure(fields['in'], fields['out'])
+            return seq
         
         return cls(**fields)
 
@@ -94,6 +83,7 @@ class OperationSequence(yaml.YAMLObject, metaclass=OpSequenceMeta):
                 output: '{}_{}'.format(output, self.id)
                 for op in self.operations
                 for output in op.out.values()
+                if not output in self.out
             }
         return self._new_labels
 
@@ -104,23 +94,6 @@ class OperationSequence(yaml.YAMLObject, metaclass=OpSequenceMeta):
             for inpt in op.inpt.values()
             if not inpt in self.computes
         ]
-
-    @property
-    def layers(self):
-        next_ids = self.out
-        self._layers = []
-        while next_ids:
-            this_layer = [
-                op for op in self.operations
-                if any([id in op['out'].values() for id in list(next_ids)])]
-            
-            # Add layers in reverse order
-            self._layers.insert(0, this_layer)
-            next_ids = set([idstr for op in this_layer
-                                for idstr in op['in'].values()])
-
-        logging.info('Operation sequence layers: \n{}'.format(self._layers))
-        return self._layers
         
     def run(self, case):
         logging.info('Running {} sequence'.format(self.title))
@@ -128,11 +101,19 @@ class OperationSequence(yaml.YAMLObject, metaclass=OpSequenceMeta):
         for op in self.operations:
             all_data = copy.copy(self.inpt)
             all_data.update(case.dir_structure.datasets)
+            
             inpt_data = {
                 key.replace('-', '_'): all_data[value]
                 for key, value in op.inpt.items()}
-            
-            output_data = op.configure(case.cfg, **inpt_data).save()
+
+            logging.debug('Files located at:')
+            for key, loc in inpt_data.items():
+                if hasattr(loc, 'filepath'):
+                    logging.debug('    %s <- %s', key, loc.filepath.path)
+
+            output_data = op.configure(
+                    case.cfg, paths=case.dir_structure.output_files,
+                    **inpt_data).save()
                 
             case.dir_structure.update_datasets({
                 out_key: output_data[op_key] 
@@ -147,7 +128,6 @@ def run_cfg(cfg):
     collection = CaseCollection(cfg)
     cases = collection.cases
     case = cases[0]
-    logging.debug(case.dir_structure.datasets)
     
     master_seq = OperationSequence(cfg['operations'])
     master_seq.configure(

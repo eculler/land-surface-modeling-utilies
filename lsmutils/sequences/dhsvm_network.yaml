@@ -1,0 +1,88 @@
+!OpSequence
+title: Stream Network Definition by Drop Analysis
+doc: Defines the stream based on the Peuker Douglass algorithm, then computes the stream network.
+operations:
+  - !OpSequence
+    name: source-area
+    in:
+      dem: dem
+    out:
+      no-sinks: no-sinks
+      flow-direction: flow-direction
+      source-area: source-area
+  - !OpSequence
+    name: soil-depth
+    in:
+      dem: dem
+      min-depth: soil-min-depth
+      max-depth: soil-max-depth
+    out:
+      soil-depth
+  - !Operation
+    name: eccw-to-ncw
+    in:
+      flow-dir-ds: flow-direction
+    out:
+      flow-direction: flow-dir-for-distance
+  - !Operation
+    name: flow-distance-euclidean
+    in:
+      flow-dir-ds: flow-dir-for-distance
+    out:
+      flow-distance: flow-distance
+  - !Operation
+    name: stream-definition-threshold
+    in:
+      source-area-ds: source-area
+    out:
+      stream-raster: stream-definition-threshold
+  - !Operation
+    name: snap-outlet
+    in:
+      flow-dir-ds: flow-direction
+      stream-ds: stream-definition-threshold
+      outlet-ds: outlet
+    out:
+      outlet-on-stream: outlet-on-stream
+  - !Operation
+    name: label-outlet
+    in:
+      outlet-ds: outlet-on-stream
+    out:
+      labelled-outlet: labelled-outlet
+  - !Operation
+    name: stream-def-pd
+    in:
+      no-sinks-ds: no-sinks
+      flow-dir-ds: flow-direction
+      source_area-ds: source-area
+      outlet-ds: labelled-outlet
+    out:
+      stream-definition: stream-definition
+  - !Operation
+    name: stream-network
+    in:
+      no-sinks-ds: no-sinks
+      flow-dir-ds: flow-direction
+      source-area-ds: source-area
+      outlet-ds: labelled-outlet
+      pd-stream-def-ds: stream-definition
+    out:
+      order: order
+      tree: tree
+      coord: coord
+      network: stream-network
+      watershed: watershed
+  - !Operation
+    name: dhsvm-network
+    in:
+      tree-ds: tree
+      coord-ds: coord
+      network-ds: stream-network
+      watershed-ds: watershed
+      soil-depth-ds: soil-depth
+      flow-distance-ds: flow-distance
+    out:
+      network: network
+      map: map
+      state: state

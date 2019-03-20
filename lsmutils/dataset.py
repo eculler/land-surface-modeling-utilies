@@ -113,6 +113,8 @@ class GDALDataset(SpatialDataset):
     def __init__(self, filepath, template=None, filetype='gtif'):
         self.filepath = filepath
         self.filetype = filetype
+
+        # Initialize internal attributes
         self._dataset = None
         self._geotransform = None
         self._nodata = None
@@ -136,9 +138,13 @@ class GDALDataset(SpatialDataset):
         self._lr = None
         self._warp_output_bounds = None
         self._rev_warp_output_bounds = None
+
+        # Reopen file if updating
         self.mod = gdal.GA_ReadOnly
+
+        # New dataset with template metadata
         if template:
-            driver = gdal.GetDriverByName('GTiff')
+            driver = gdal.GetDriverByName(self.filetypes[filetype])
             self._dataset = driver.CreateCopy(filepath.path, template.dataset)
         
     @property
@@ -163,7 +169,7 @@ class GDALDataset(SpatialDataset):
 
     @dataset.setter
     def dataset(self, dataset):
-        self.__init__(self.filename, filetype=self.filetype)
+        self.__init__(self.filepath, filetype=self.filetype)
         self._dataset = dataset
 
     @dataset.deleter
@@ -231,16 +237,14 @@ class GDALDataset(SpatialDataset):
 
     @nodata.setter
     def nodata(self, new_nodata):
-        try:
-            self.chmod(gdal.GA_Update)
-        except:
-            logging.warning('Did not set no data value')
-            return None
+        self.chmod(gdal.GA_Update)
         old_nodata = self.nodata
         self.dataset.GetRasterBand(1).SetNoDataValue(new_nodata)
         array = self.array
         array[array==old_nodata] = new_nodata
         self.array = array
+
+        self.dataset.FlushCache()
         self._masked = None
         self._dataset = None
         self._nodata = self.dataset.GetRasterBand(1).GetNoDataValue()
@@ -279,6 +283,8 @@ class GDALDataset(SpatialDataset):
 
         # Set datatype to match the new array if necessary
         ds = self.dataset
+        nodata = self.nodata
+        
         # GDAL doesn't have 64-bit integers
         if new_array.dtype == np.int64:
             new_array = new_array.astype(np.int32)
@@ -293,8 +299,13 @@ class GDALDataset(SpatialDataset):
                                1, new_dtype)
             ds.SetGeoTransform(geotransform)
             ds.SetProjection(srs)
-            
+
+        # Write new array
         ds.GetRasterBand(1).WriteArray(new_array)
+        # Nodata value does not transfer
+        ds.GetRasterBand(1).SetNoDataValue(nodata)
+
+        # Clean up
         ds.FlushCache()
         self._dataset = ds
         self._array = None
@@ -407,103 +418,7 @@ class GDALDataset(SpatialDataset):
         if not self._center:
             self._center = (self.max - self.min) / 2.
         return self._center
-
-
-    def plot(self, title, uri, boundary_ds=None, outlet_ds=None,
-             show=True, padding=1/240., quiver=False, colorlog=False,
-             cmap='RdBu_r', **kwargs):
-        fig = plt.figure()
-
-        # Clip plot to boundary if given or to raster extent if not
-        #if not boundary_ds is None:
-            # Basemap requires epsg:4326 - reproject if necessary
-        """
-            wgs84srs = osr.SpatialReference().ImportFromEPSG(4326)
-            layer = boundary_ds.dataset.GetLayer()
-            srs = layer.GetSpatialRef()
-            if not srs == wgs84srs:
-                new_ds = driver.CreateDataSource()
-                transform = osr.CoordinateTransformation(srs, wgs84srs)
-                new_layer = 
-                feature = layer.GetNextFeature()
-                while feature:
-                    geom = feature.GetGeometryRef()
-                    geom.Transform(transform)
-                    new_feature = ogr.Feature(
-        """
-        #    corners = boundary_ds.gridcorners(CoordProperty(x=1/16., y=1/16.))
-        #else:
-        corners = Dataset(ds_min=self.cmin, ds_max = self.cmax)
-        basemap = bm.Basemap(
-                llcrnrlon = corners.ll.lon - padding,
-                llcrnrlat = corners.ll.lat - padding,
-                urcrnrlon = corners.ur.lon + padding,
-                urcrnrlat = corners.ur.lat + padding,
-                resolution = 'i')
-
-        # Overlay watershed boundary and outlet if given
-        #if not boundary_ds is None:
-        #    basemap.readshapefile(boundary_ds.filepath.no_ext, 'watershed')
-        if not outlet_ds is None:
-            basemap.readshapefile(outlet_ds.filepath.no_ext, 'outlet')
-
-        # Add bounding box rectangle
-        bb_rect = patches.Polygon(
-                [corners.ul.coord, corners.ur.coord,
-                 corners.lr.coord, corners.ll.coord],
-                facecolor='none', edgecolor='black')
-        plt.gca().add_patch(bb_rect)
-
-        # Print dataset information
-        logging.debug('geotransform: {}'.format(self.geotransform))
-        logging.debug('resolution x: {}, y: {}'.format(self.res.x, self.res.y))
-        logging.debug('min x: {}, min y: {}'.format(self.min.x, self.min.y))
-        logging.debug('max x: {}, max y: {}'.format(self.max.x, self.max.y))
-        logging.debug('ll x: {}, ll y: {}'.format(
-                corners.ll.lon, corners.ll.lat))
-        logging.debug('ur x: {}, ur y: {}'.format(
-                corners.ur.lon, corners.ur.lat))
-
-        # Draw and label parallels and meridians
-        parallels = np.linspace(
-                floor(corners.min.lat), ceil(corners.max.lat), 5)
-        basemap.drawparallels(parallels, labels=[True, False, False, True])
-        meridians = np.linspace(
-                floor(corners.min.lon), ceil(corners.max.lon), 5)
-        basemap.drawmeridians(meridians, labels=[True, False, False, True])
-        
-        # Mask raster array at nodata locations
-        z = self.array
-        z = np.ma.masked_where(z==self.nodata, z)
-
-        # Modify normalization for log color scale
-        if colorlog:
-            norm = colors.LogNorm(vmin=z.min(), vmax=z.max())
-        else:
-            norm = None
-
-        # Plot grid cells
-        lon, lat = np.meshgrid(self.grid.lon, self.grid.lat)
-        im = basemap.pcolormesh(lon, lat, z, cmap=cmap, latlon=True,
-                                rasterized=True, norm=norm, **kwargs)
-        basemap.colorbar(im)
-
-        # Add arrows for quiver plot
-        if quiver:
-            lon, lat = np.meshgrid(self.cgrid.lon, self.cgrid.lat)
-            u = np.cos((3 - z) / 4. * np.pi)
-            v = np.sin((3 - z) / 4. * np.pi)
-            basemap.quiver(lon, lat, u, v, latlon=True, scale=50)
-
-        # Add title
-        plt.title(title)
-
-        # Save and show
-        plt.savefig(uri, dpi=100)
-        if show:
-            plt.show()
-            
-        return basemap
+    
 
 class BoundaryDataset(SpatialDataset):
     def __init__(self, filepath, update=False, driver='ESRI Shapefile'):

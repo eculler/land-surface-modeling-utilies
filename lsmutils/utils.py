@@ -56,18 +56,17 @@ class CoordProperty(yaml.YAMLObject):
             self._x = lon
         else:
             self._x = x
-        try:
-            self._x = eval(self._x)
-        except TypeError:
-            pass
 
         if y is None:
             self._y = lat
         else:
             self._y = y
+
+        # Get correct datatypes when loading from yaml
         try:
+            self._x = eval(self._x)
             self._y = eval(self._y)
-        except TypeError:
+        except:
             pass
 
         self.epsg = epsg
