@@ -30,6 +30,7 @@ class Path(yaml.YAMLObject):
         """
         Set path variables
         """
+        
         self.file_id = file_id if file_id else self.file_id
         self.env = None
         self.filename = filename if filename else self.filename

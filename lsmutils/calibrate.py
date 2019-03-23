@@ -126,6 +126,10 @@ class CaseDirStructure(yaml.YAMLObject):
     def datasets(self):
         # Load existing datasets
         if self._datasets:
+            for key, pth in self.paths.items():
+                print(key)
+                print(pth)
+                print(pth.isfile)
             self._datasets.update({
                     key: path.dataset 
                     for (key, path) in self.paths.items()

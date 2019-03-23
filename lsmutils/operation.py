@@ -1,10 +1,12 @@
 import copy
 import csv
+import datetime
 import gdal
 import geopandas as gpd
 import glob
 import inspect
 import logging
+import netCDF4 as nc4
 import numpy as np
 import ogr
 import os
@@ -103,8 +105,6 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                     default_ext=ot.filetype).configure(run_config)
             for ot in self.output_types}
         
-        print(self.out)
-        print({key: loc.path for key, loc in self.paths.items()})
         alt_paths = {}
         for key, label in self.out.items():
             if label in paths:
@@ -709,6 +709,7 @@ class LabelGagesOp(Operation):
                 self.paths['labelled-outlet'].ext(
                     os.path.splitext(a_file)[1][1:]))
         outlet_ds = BoundaryDataset(self.paths['labelled-outlet'])
+        
         return {'labelled-outlet': outlet_ds}
     
     
@@ -953,9 +954,10 @@ class DHSVMNetworkOp(Operation):
     output_types = [
         OutputType('network', 'csv'),
         OutputType('map', 'csv'),
-        OutputType('state', 'csv')
+        OutputType('state', 'csv'),
+        OutputType('class', 'csv')
     ]
-
+        
     net_colnames = [
         u'LINKNO',
         u'order',
@@ -1100,12 +1102,15 @@ class DHSVMNetworkOp(Operation):
         
         net_df.sort_values(['order'])[self.state_colnames].to_csv(
                 self.paths['state'].path, **csvargs)
+
+        self.class_properties.to_csv(self.paths['class'].path, **csvargs)
                 
         return {
             'network': DataFrameDataset(
-                    self.paths['network'].path, **csvargs),
-            'map': DataFrameDataset(self.paths['map'].path, **csvargs),
-            'state': DataFrameDataset(self.paths['state'].path, **csvargs)
+                    self.paths['network'], **csvargs),
+            'map': DataFrameDataset(self.paths['map'], **csvargs),
+            'state': DataFrameDataset(self.paths['state'], **csvargs),
+            'class': DataFrameDataset(self.paths['class'], **csvargs)
         }
         
 
@@ -1362,3 +1367,79 @@ class ShadingOp(Operation):
                          lat, lon, cell_size, rows, cols,
                          self.paths['solar']])
         return 
+
+class WriteOneVarNetCDFOp(Operation):
+    """ Write datasets to a netcdf file """
+
+    title = 'Write NetCDF'
+    output_types = [OutputType('netcdf', 'nc')]
+    dtype = NotImplemented
+    units = NotImplemented
+    nc_format='NETCDF4_CLASSIC'
+    fill = NotImplemented
+    
+    def run(self, input_ds):
+        ncfile = nc4.Dataset(
+                self.paths['netcdf'].path, 'w', format=self.nc_format)
+        ncfile.history = 'Created using lsmutils {}'.format(
+                datetime.datetime.now())
+    
+        array = input_ds.array
+        nodata = input_ds.nodata
+        array[array==nodata] = self.fill
+
+        # Add dimensions
+        t_dim = ncfile.createDimension("time", None)
+        t_var = ncfile.createVariable("time", "f8", ("time",))
+        t_var.units = 'time'
+        t_var[:] = np.array([0])
+
+        lons = input_ds.cgrid.lon
+        lon_dim = ncfile.createDimension("x", len(lons))
+        lon_var = ncfile.createVariable("x", "f8", ("x",))
+        lon_var.standard_name = 'projection_x_coordinate'
+        lon_var.units = 'Meters'
+        lon_var[:] = lons
+
+        lats = input_ds.cgrid.lat
+        lat_dim = ncfile.createDimension("y", len(lats))
+        lat_var = ncfile.createVariable("y", "f8", ("y",))
+        lat_var.standard_name = 'projection_y_coordinate'
+        lat_var.units = 'Meters'
+        lat_var[:] = lats
+
+        # Add variable of interest
+        ncvar = ncfile.createVariable(
+                self.varname, self.dtype, ('time', 'y', 'x'))
+        ncvar.missing_value = self.fill
+        ncvar.units = self.units
+        ncvar[0:1,:,:] = np.expand_dims(array, axis=0)
+
+        ncfile.close()
+
+        self.paths['netcdf'].netcdf_variable = self.varname
+        return {'netcdf': GDALDataset(self.paths['netcdf'])}
+
+class DEMForDHSVM(WriteOneVarNetCDFOp):
+
+    name = 'dhsvm-dem'
+    varname = 'Basin.DEM'
+    dtype = 'f'
+    units = 'Meters'
+    fill = -999.
+
+class MaskForDHSVM(WriteOneVarNetCDFOp):
+
+    name = 'dhsvm-mask'
+    varname = 'Basin.Mask'
+    dtype = 'i1'
+    units = 'mask'
+    fill = 0
+
+class SoilDepthForDHSVM(WriteOneVarNetCDFOp):
+
+    name = 'dhsvm-soil-depth'
+    varname = 'Soil.Depth'
+    dtype = 'f'
+    units = 'Meters'
+    fill = -999.

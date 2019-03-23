@@ -1,7 +1,9 @@
 import copy
 import logging
+import os
 import pkg_resources
 import random
+import shutil
 import string
 import yaml
 
@@ -64,10 +66,12 @@ class OperationSequence(yaml.YAMLObject):
             op.relabel(self.new_labels)
     
     def __repr__(self):
-        repr_fmt = ('OperationSequence(name={name}, id={idstr}, ' +
+        repr_fmt = ('OperationSequence(name={name}, ' +
                     'doc={doc}, operations={operations})')
-        return repr_fmt.format(name=self.name, idstr=self.idstr,
-                               doc=self.doc, operations=self.operations)
+        return repr_fmt.format(
+                name=self.name,
+                doc=self.doc,
+                operations=[op.name for op in self.operations])
 
     @property
     def computes(self):
@@ -143,5 +147,9 @@ def run_cfg(cfg):
             logging.info('    O: %s <- %s', key, value)
 
     case = master_seq.run(case)
+
+    # Clean up
+    tmp_path = os.path.join(cfg['base_dir'], cfg['temp_dir'])
+    shutil.rmtree(tmp_path)
     
     return case
