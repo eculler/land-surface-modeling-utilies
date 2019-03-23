@@ -108,7 +108,11 @@ class OperationSequence(yaml.YAMLObject):
             
             inpt_data = {
                 key.replace('-', '_'): all_data[value]
-                for key, value in op.inpt.items()}
+                for key, value in op.inpt.items()
+                if value in all_data}
+            inpt_data.update({
+                key: value for key, value in op.inpt.items()
+                if not value in all_data})
 
             logging.debug('Files located at:')
             for key, loc in inpt_data.items():

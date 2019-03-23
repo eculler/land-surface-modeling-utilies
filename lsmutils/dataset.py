@@ -119,7 +119,7 @@ class GDALDataset(SpatialDataset):
         self._geotransform = None
         self._nodata = None
         self._datatype = None
-        self._projection = None
+        self._srs = None
         self._resolution = None
         self._size = None
         self._array = None
@@ -212,14 +212,16 @@ class GDALDataset(SpatialDataset):
     @property
     def srs(self):
         if not self._srs:
-            self._srs = self.dataset.GetProjection()
+            wkt = self.dataset.GetProjection()
+            self._srs = osr.SpatialReference()
+            self._srs.ImportFromWkt(wkt)
         return self._srs
 
     @srs.setter
     def srs(self, new_espg):
         logging.debug('Trying projection {}'.format(self.espg))
         srs = osr.SpatialReference()
-        srs.ImportFromEPSG(self.espg)
+        srs.ImportFromEPSG(new_espg)
         self._dataset.SetProjection(srs.ExportToWkt())
         self._srs = srs
 
@@ -287,6 +289,7 @@ class GDALDataset(SpatialDataset):
         
         # GDAL doesn't have 64-bit integers
         if new_array.dtype == np.int64:
+            nodata = nodata.astype(np.int32)
             new_array = new_array.astype(np.int32)
         new_dtype = gdal_array.NumericTypeCodeToGDALTypeCode(new_array.dtype)
         if not new_dtype == ds.GetRasterBand(1).DataType:
@@ -303,7 +306,8 @@ class GDALDataset(SpatialDataset):
         # Write new array
         ds.GetRasterBand(1).WriteArray(new_array)
         # Nodata value does not transfer
-        ds.GetRasterBand(1).SetNoDataValue(nodata)
+        if nodata:
+            ds.GetRasterBand(1).SetNoDataValue(nodata)
 
         # Clean up
         ds.FlushCache()

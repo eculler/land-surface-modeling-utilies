@@ -220,11 +220,13 @@ class MergeOp(Operation):
 
     title = 'Merged Raster'
     name = 'merge'
-    output_types = ['merged']
+    output_types = [OutputType('merged', 'gtif')]
 
     def run(self, raster_list):
-        subprocess.call(['gdal_merge.py', '-o', self.paths['merged'].path] +
-                        [ds.filepath.path for ds in raster_list])
+        subprocess.call([
+            'gdal_merge.py', '-o',
+            self.paths['merged'].path] +
+            [ds.filepath.path for ds in raster_list])
         return {'merged': GDALDataset(self.paths['merged'])}
 
 class AlignOp(Operation):
@@ -233,29 +235,49 @@ class AlignOp(Operation):
     name = 'align'
     output_types = [OutputType('aligned', 'gtif')]
 
-    def run(self, input_ds, boundary_ds=None, 
-            resolution=CoordProperty(x=1/240., y=1/240.), grid_res=None,
-            padding=CoordProperty(x=0, y=0), bbox=None, algorithm='bilinear'):
-        if grid_res is None:
-            grid_res = resolution
-        if not boundary_ds is None:
+    def run(self, input_ds,
+            template_ds=None, boundary_ds=None, bbox=None, 
+            resolution=CoordProperty(x=1/240., y=1/240.), grid_res=None, 
+            padding=CoordProperty(x=0, y=0),
+            algorithm='bilinear'):
+        if template_ds:
+            resolution = template_ds.resolution
+            grid_box_in = template_ds.gridcorners(
+                template_ds.res, padding=padding).warp_output_bounds
+            grid_box = []
+            # SRS needs to match for output bounds and input dataset
+            if not template_ds.srs == input_ds.srs:
+                transform = osr.CoordinateTransformation(
+                    template_ds.srs, input_ds.srs)
+                grid_box.extend(
+                    transform.TransformPoint(*grid_box_in[:2])[:2])
+                grid_box.extend(
+                    transform.TransformPoint(*grid_box_in[2:])[:2])
+        elif boundary_ds:
             grid_box = boundary_ds.gridcorners(
                     grid_res, padding=padding).warp_output_bounds
-        elif not bbox is None:
+        elif bbox:
             grid_box = [bbox.llc.x - padding.x, bbox.llc.y - padding.y,
                         bbox.urc.x + padding.x, bbox.urc.y + padding.y]
         else:
             grid_box = input_ds.gridcorners(
                     grid_res, padding=padding).warp_output_bounds
+
+        if not grid_res:
+            grid_res = resolution
+        
         agg_warp_options = gdal.WarpOptions(
-                xRes = resolution.x,
-                yRes = resolution.y,
-                outputBounds = grid_box,
-                targetAlignedPixels = True,
-                resampleAlg=algorithm,
+            xRes = resolution.x,
+            yRes = resolution.y,
+            outputBounds = grid_box,
+            targetAlignedPixels = True,
+            resampleAlg=algorithm,
         )
-        gdal.Warp(self.paths['aggregated'].path, input_ds.dataset, 
-                  options=agg_warp_options)
+        gdal.Warp(
+            self.paths['aligned'].path,
+            input_ds.dataset, 
+            options=agg_warp_options)
+        
         return {'aligned': GDALDataset(self.paths['aligned'])}
     
 class ClipOp(Operation):
@@ -266,11 +288,11 @@ class ClipOp(Operation):
     
     def run(self, input_ds, boundary_ds):
         clip_warp_options = gdal.WarpOptions(
-                format='GTiff',
-                cutlineDSName=boundary_ds.filepath.shp,
-                cutlineBlend=.5,
-                dstNodata=input_ds.nodata,
-                )
+            format='GTiff',
+            cutlineDSName=boundary_ds.filepath.shp,
+            cutlineBlend=.5,
+            dstNodata=input_ds.nodata,
+        )
         gdal.Warp(path, input_ds.dataset, options=clip_warp_options)
         return GDALDataset(self.path)
 
@@ -280,10 +302,14 @@ class ReprojectRasterOp(Operation):
     name = 'reproject-raster'
     output_types = [OutputType('reprojected', 'gtif')]
 
-    def run(self, input_ds, proj):
-        agg_warp_options = gdal.WarpOptions(dstSRS = proj)
-        gdal.Warp(self.paths['reprojected'].path, input_ds.dataset, 
-                  options=agg_warp_options)
+    def run(self, input_ds, template_ds=None, srs=None):
+        if template_ds:
+            srs = template_ds.srs
+        agg_warp_options = gdal.WarpOptions(dstSRS = srs)
+        gdal.Warp(
+            self.paths['reprojected'].path,
+            input_ds.dataset, 
+            options=agg_warp_options)
         return {'reprojected': GDALDataset(self.paths['reprojected'])}
 
 class ReprojectVectorOp(Operation):
@@ -1337,6 +1363,45 @@ class Melt(Operation):
                     writer.writerow(row)
         return True
 
+class NLCDtoDHSVM(Operation):
+    """ 
+    Convert vegetation classes from the National Land Cover 
+    Database to corresponding DHSVM values 
+    """
+
+    title = 'Remap NLCD to DHSVM'
+    name = 'nlcd-to-dhsvm'
+    output_types = [OutputType('soil-type', 'gtif')]
+
+    remap_table = {
+        11: 14,
+        12: 20,
+        21: 10,
+        22: 13,
+        23: 13,
+        24: 13,
+        3: 12,
+        41: 4,
+        42: 1,
+        43: 5,
+        51: 9,
+        52: 9,
+        71: 10,
+        72: 10,
+        81: 10,
+        82: 11,
+        90: 17,
+        95: 9
+    }
+
+
+    def run(self, nlcd_ds):
+        array = copy.copy(nlcd_ds.array)
+        for nlcd, dhsvm in self.remap_table.items():
+            array[nlcd_ds.array==nlcd] = dhsvm
+        nlcd_ds.array = array
+        return {'soil-type': nlcd_ds}
+        
 class ShadingOp(Operation):
     """ Compute Slope and Aspect from a DEM """
 
@@ -1443,3 +1508,19 @@ class SoilDepthForDHSVM(WriteOneVarNetCDFOp):
     dtype = 'f'
     units = 'Meters'
     fill = -999.
+
+class VegTypeForDHSVM(WriteOneVarNetCDFOp):
+
+    name = 'dhsvm-veg-type'
+    varname = 'Veg.Type'
+    dtype = 'i1'
+    units = 'Veg Type'
+    fill = -99
+
+class SoilTypeForDHSVM(WriteOneVarNetCDFOp):
+
+    name = 'dhsvm-soil-type'
+    varname = 'Soil.Type'
+    dtype = 'i1'
+    units = 'Soil Type'
+    fill = -99
