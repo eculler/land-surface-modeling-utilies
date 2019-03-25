@@ -3,7 +3,7 @@ import logging
 import os
 import yaml
 
-from .dataset import GDALDataset, BoundaryDataset
+from .dataset import GDALDataset, BoundaryDataset, DataFrameDataset
 
 class Path(yaml.YAMLObject):
     """
@@ -24,9 +24,10 @@ class Path(yaml.YAMLObject):
         return cls(**fields)
 
     def __init__(self, file_id='',
-                 filename='', dirname='',
-                 default_ext='', default_name_fmt='',
-                 netcdf_variable=''):
+                     filename='', dirname='',
+                     default_ext='', default_name_fmt='',
+                     netcdf_variable='',
+                     omit_ext=False):
         """
         Set path variables
         """
@@ -41,6 +42,7 @@ class Path(yaml.YAMLObject):
             default_name_fmt if default_name_fmt else self.default_name_fmt)
         self.netcdf_variable = (
             netcdf_variable if netcdf_variable else self.netcdf_variable)
+        self.omit_ext = omit_ext
 
     def configure(self, cfg, file_id='', dirname=''):
         self.file_id = file_id if file_id else self.file_id
@@ -100,6 +102,8 @@ class Path(yaml.YAMLObject):
 
     @property
     def path(self):
+        if self.omit_ext:
+            return self.no_ext
         if self.default_ext:
             return self.ext(self.default_ext)
         return self.no_ext
@@ -198,23 +202,28 @@ class Path(yaml.YAMLObject):
             return None
         
     def get_dataset(self, path):
+        # Check if file exists before loading
         try:
             os.path.isfile(path.path)
         except AttributeError:
             return None
 
-        # Try OGR if the file has a shapefile extension
-        if self.default_ext=='shp':
+        filetype = self.default_ext if self.default_ext else ''
+        
+        if filetype=='shp':
             try:
                 dataset = BoundaryDataset(path)
                 if not dataset.dataset is None:
                     return dataset
             except Exception:
                 dataset = None
+
+        if filetype in DataFrameDataset.filetypes:
+            dataset = DataFrameDataset(path, filetype=filetype)
+            return dataset
         
         # Try raster
         try:
-            filetype = self.default_ext if self.default_ext else ''
             dataset = GDALDataset(path, filetype=filetype)
             if not dataset.dataset is None:
                 return dataset

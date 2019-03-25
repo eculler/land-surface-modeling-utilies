@@ -67,7 +67,7 @@ class CaseDirStructure(yaml.YAMLObject):
         self.structure = paths
         self.paths = {}
         self.date = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')
-        self._datasets = {}
+        self.data = {}
         
         self.path_info = {}
         self.output_files = {}
@@ -102,7 +102,7 @@ class CaseDirStructure(yaml.YAMLObject):
         # Add output files
         self.output_files = {
             key: self.path_info[key].configure(
-                    cfg, file_id=key, dirname=os.path.join(*loc))
+                cfg, file_id=key, dirname=os.path.join(*loc))
             for key, loc in self.output_files.items()
         }
         self.paths.update(self.output_files)
@@ -114,37 +114,29 @@ class CaseDirStructure(yaml.YAMLObject):
             if hasattr(path, 'file_id')
         })
 
+        # Add non-file data
+        self.data.update(cfg['in'])
+        # Load existing datasets
+        self.data.update({
+            key: path.dataset 
+            for (key, path) in self.paths.items()
+            if path.isfile
+        })
+
         # Generate path strings
-        self.files = {key: path.path
-                      for (key, path) in self.paths.items()}
+        self.files = {
+            key: path.path
+            for (key, path) in self.paths.items()}
         for key, path in self.files.items():
             filetype = 'Output' if key in self.output_files else 'Input'
             logging.info('%s file %s located at %s', filetype, key, path)
         return self
 
-    @property
-    def datasets(self):
-        # Load existing datasets
-        if self._datasets:
-            self._datasets.update({
-                    key: path.dataset 
-                    for (key, path) in self.paths.items()
-                    if (path.isfile
-                        and not key in self._datasets.keys())})
-        else:
-            self._datasets = { key: path.dataset
-                               for (key, path) in self.paths.items()
-                               if path.isfile}
-        return self._datasets
-
-    def update_datasets(self, new_datasets, prefix=''):
-        if prefix:
-            new_datasets = {'::'.join([prefix, key]): ds
-                            for (key, ds) in new_datasets.items()}
+    def update_data(self, new_data):
         self.paths.update({key: ds.filepath 
-                           for (key, ds) in new_datasets.items()})
-        self._datasets.update(new_datasets)
-        return self._datasets
+                           for (key, ds) in new_data.items()})
+        self.data.update(new_data)
+        return self.data
 
     @classmethod
     def from_yaml(cls, loader, node):

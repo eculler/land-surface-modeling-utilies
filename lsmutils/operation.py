@@ -41,13 +41,13 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     A parent class to perform some operation on a raster dataset
 
     Child classes must define at minimum:
-      - name: a human-readable name, 
+      - name: a human-readable name,
       - type_id: a path-friendly identifier
       - run(): a function to perform the raster operation.
     """
 
     yaml_tag = u'!Operation'
-    
+
     title = NotImplemented
     name = NotImplemented
     output_types = NotImplemented
@@ -60,22 +60,23 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     def __init__(self, inpt, out):
         self.inpt = inpt
         self.out = out
-    
+
     @classmethod
     def from_yaml(cls, loader, node):
         fields = loader.construct_mapping(node, deep=True)
         fields['inpt'] = fields.pop('in')
         child_cls = cls.__children__()[fields.pop('name')]
         return child_cls(**fields)
-    
+
     def configure(self, run_config, paths={}, **kwargs):
         logging.debug('Configuring %s operation', self.name)
-        
+
         self._resolution = None
         self._input_datasets = None
-        
+
         # Extract configuration variables
-        self.kwargs = kwargs
+        self.kwargs = {
+            key.replace('-', '_'): value for key, value in kwargs.items()}
         self.run_config = run_config
         self.log_level = run_config['log_level']
 
@@ -90,7 +91,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         self.attributes.update(
                 {title: getattr(self, title) for title in dir(self)})
 
-        logging.debug('Format %s file names', self.name)
+        logging.debug('Formatting %s file names', self.name)
         self.filenames = {
             ot.key: self.filename_format.format(
                     output_type=ot.key,
@@ -104,7 +105,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                     filename=self.filenames[ot.key],
                     default_ext=ot.filetype).configure(run_config)
             for ot in self.output_types}
-        
+
         alt_paths = {}
         for key, label in self.out.items():
             if label in paths:
@@ -114,14 +115,13 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                             paths[label].default_ext = ot.filetype
                             alt_paths[key] = paths.pop(label)
         self.paths.update(alt_paths)
-        print({key: loc.path for key, loc in self.paths.items()})
 
         for key, pth in self.paths.items():
             logging.debug('%s path at %s', key, pth.path)
 
         # Initialize variables
         self.datasets = []
-        
+
         return self
 
     def get_label(self, output_type):
@@ -142,7 +142,8 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         for pykey, dsname in self.out.items():
             if dsname in new_labels:
                 self.out[pykey] = new_labels[dsname]
-                logging.debug('Relabelled %s to %s', dsname, self.out[pykey])
+                logging.debug(
+                    'Relabelled %s to %s', dsname, self.out[pykey])
 
     @property
     def input_datasets(self):
@@ -151,7 +152,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                 ds for key, ds in self.kwargs.items()
                     if key.endswith('_ds')]
         return self._input_datasets
-    
+
     @property
     def resolution(self):
         if not self._resolution:
@@ -168,10 +169,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             else:
                 self._resolution = CoordProperty(0, 0)
         return self._resolution
-        
+
     def run(self, **kwargs):
         raise NotImplementedError
-        
+
     def save(self):
         """A convenience function to save as default format"""
         return self.saveas()
@@ -182,7 +183,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             if hasattr(value, 'filepath'):
                 value = value.filepath.path
             logging.info('    %s <- %s', key, value)
-        
+
         # Change path extensions to match working extension
         for key, filetype in filetypes.items():
             self.paths[key].default_ext = filetype
@@ -190,10 +191,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         # Perform raster operation
         if not self.datasets:
             # Don't write over files if operation has already run
-            if (all([os.path.exists(pth.path) 
+            if (all([os.path.exists(pth.path)
                         for ot, pth in self.paths.items()])
                     and not self.log_level==logging.DEBUG):
-                self.datasets = {key: GDALDataset(pth) 
+                self.datasets = {key: GDALDataset(pth)
                                     for key, pth in self.paths.items()}
             else:
                 self.datasets = self.run(**self.kwargs)
@@ -236,36 +237,30 @@ class AlignOp(Operation):
     output_types = [OutputType('aligned', 'gtif')]
 
     def run(self, input_ds,
-            template_ds=None, boundary_ds=None, bbox=None, 
-            resolution=CoordProperty(x=1/240., y=1/240.), grid_res=None, 
+            template_ds=None, bbox=None,
+            resolution=CoordProperty(x=1/240., y=1/240.), grid_res=None,
             padding=CoordProperty(x=0, y=0),
             algorithm='bilinear'):
+        if not grid_res:
+            grid_res = resolution
         if template_ds:
             resolution = template_ds.resolution
-            grid_box_in = template_ds.gridcorners(
-                template_ds.res, padding=padding).warp_output_bounds
-            grid_box = []
+            bbox = copy.copy(template_ds.bbox)
             # SRS needs to match for output bounds and input dataset
             if not template_ds.srs == input_ds.srs:
                 transform = osr.CoordinateTransformation(
                     template_ds.srs, input_ds.srs)
-                grid_box.extend(
-                    transform.TransformPoint(*grid_box_in[:2])[:2])
-                grid_box.extend(
-                    transform.TransformPoint(*grid_box_in[2:])[:2])
-        elif boundary_ds:
-            grid_box = boundary_ds.gridcorners(
-                    grid_res, padding=padding).warp_output_bounds
-        elif bbox:
+                bbox.llc = CoordProperty(
+                    *transform.TransformPoint(bbox.llc.x, bbox.llc.y)[:-1])
+                bbox.urc = CoordProperty(
+                    *transform.TransformPoint(bbox.urc.x, bbox.urc.y)[:-1])
+        if bbox:
             grid_box = [bbox.llc.x - padding.x, bbox.llc.y - padding.y,
                         bbox.urc.x + padding.x, bbox.urc.y + padding.y]
         else:
             grid_box = input_ds.gridcorners(
                     grid_res, padding=padding).warp_output_bounds
-
-        if not grid_res:
-            grid_res = resolution
-        
+                    
         agg_warp_options = gdal.WarpOptions(
             xRes = resolution.x,
             yRes = resolution.y,
@@ -275,17 +270,17 @@ class AlignOp(Operation):
         )
         gdal.Warp(
             self.paths['aligned'].path,
-            input_ds.dataset, 
+            input_ds.dataset,
             options=agg_warp_options)
-        
+
         return {'aligned': GDALDataset(self.paths['aligned'])}
-    
+
 class ClipOp(Operation):
 
     title = 'Raster clipped to boundary'
     name = 'clip'
     output_types = [OutputType('clipped_raster', 'gtif')]
-    
+
     def run(self, input_ds, boundary_ds):
         clip_warp_options = gdal.WarpOptions(
             format='GTiff',
@@ -308,7 +303,7 @@ class ReprojectRasterOp(Operation):
         agg_warp_options = gdal.WarpOptions(dstSRS = srs)
         gdal.Warp(
             self.paths['reprojected'].path,
-            input_ds.dataset, 
+            input_ds.dataset,
             options=agg_warp_options)
         return {'reprojected': GDALDataset(self.paths['reprojected'])}
 
@@ -347,7 +342,7 @@ class ReprojectVectorOp(Operation):
                 # reproject the input geometry
                 geom = feature.GetGeometryRef()
                 geom.Transform(transform)
-                
+
                 # create a new feature with same geometry and attributes
                 reproj_feature = ogr.Feature(reproj_layer_defn)
                 reproj_feature.SetGeometry(geom)
@@ -355,14 +350,14 @@ class ReprojectVectorOp(Operation):
                     reproj_feature.SetField(
                             reproj_layer_defn.GetFieldDefn(j).GetNameRef(),
                             feature.GetField(j))
-                
+
                 # add the feature to the shapefile
                 reproj_layer.CreateFeature(reproj_feature)
-                    
+
                 # dereference the features and get the next input feature
                 reproj_feature = None
                 feature = layer.GetNextFeature()
-                    
+
         # Save and close the shapefiles
         del input_ds.dataset
         del reproj_ds.dataset
@@ -379,25 +374,25 @@ class SumOp(Operation):
     def run(self, input_ds, label_ds=None, fraction_ds=None):
         array = np.ma.masked_where(input_ds.array==input_ds.nodata,
                                    input_ds.array)
-        
+
         if not fraction_ds is None:
             fractions = np.ma.masked_where(input_ds.array==input_ds.nodata,
                                            fraction_ds.array)
             array = array * fractions
-            
+
         sum = array.sum()
 
         if label_ds is None:
             label = input_ds.filepath.filename
         else:
             label = label_ds.filepath.filename
-            
+
         with open(self.path.csv, 'a') as csv_file:
             writer = csv.writer(csv_file)
             writer.writerow([label, sum])
         return sum
 
-    
+
 class MaskOp(Operation):
 
     title = 'Raster mask of boundary area'
@@ -424,7 +419,7 @@ class UniqueOp(Operation):
     name = 'unique'
     output_type = 'unique'
     filename_format = '{case_id}_{output_type}'
-    
+
     def run(self, input_ds):
         # Generate unique dataset
         unique_ds = GDALDataset(self.path, template=input_ds)
@@ -440,7 +435,7 @@ class ZonesOp(Operation):
     name = 'zones'
     output_type = 'zones'
     filename_format = '{case_id}_{output_type}'
-    
+
     def run(self, unique_ds, fine_ds):
         res_warp_options = gdal.WarpOptions(
                 xRes = fine_ds.res.x,
@@ -468,7 +463,7 @@ class FractionOp(Operation):
                     mask=(zones_ds.array != unique_iter[0]))
             fraction_np[unique_iter.multi_index] = masked.mean()
             unique_iter.iternext()
-            
+
         # Write to gdal array
         fraction_np[fraction_np==0] = unique_ds.nodata
         fraction_ds = GDALDataset(self.path, template=unique_ds)
@@ -497,7 +492,7 @@ class ClipToCoarseOp(Operation):
     def run(self, coarse_mask_ds, fine_ds):
         # Projection
         input_srs = osr.SpatialReference(wkt=coarse_mask_ds.projection)
-        
+
         # Shapefile for output (in same projection)
         shp_path = TempPath('coarse_mask_outline', **self.run_config)
         shp_driver = ogr.GetDriverByName("ESRI Shapefile")
@@ -509,7 +504,7 @@ class ClipToCoarseOp(Operation):
 
         # Get Band
         mask_band = coarse_mask_ds.dataset.GetRasterBand(1)
-        
+
         # Polygonize
         gdal.Polygonize(mask_band, mask_band, outline_layer, -9999)
         outline_ds.SyncToDisk()
@@ -520,7 +515,7 @@ class ClipToCoarseOp(Operation):
                 cutlineDSName=shp_path.shp,
                 dstNodata=-9999)
         gdal.Warp(self.path.gtif, fine_ds.dataset, options=warp_options)
-        
+
         return GDALDataset(self.path)
 
 class RemoveSinksOp(Operation):
@@ -536,7 +531,7 @@ class RemoveSinksOp(Operation):
                          '-fel', self.paths['no-sinks'].no_ext])
         no_sinks_ds = GDALDataset(self.paths['no-sinks'])
         return {'no-sinks': no_sinks_ds}
-        
+
 class FlowDirectionOp(Operation):
 
     title = 'Flow Direction'
@@ -559,7 +554,7 @@ class FlowDirectionOp(Operation):
 class FlowDistanceOp(Operation):
 
     output_types = [OutputType('flow-distance', 'gtif')]
-    
+
     def dir2dist(self, lat, lon, direction, res, nodata):
         distance = direction.astype(np.float64)
         np.copyto(distance,
@@ -573,7 +568,7 @@ class FlowDistanceOp(Operation):
                                 lon + res.lon/2, lat + res.lat/2),
                   where=np.isin(direction, [2, 4, 6, 8]))
         return distance
-        
+
     def run(self, flow_dir_ds):
         direction = flow_dir_ds.array
         lon, lat = np.meshgrid(flow_dir_ds.cgrid.lon, flow_dir_ds.cgrid.lat)
@@ -583,20 +578,20 @@ class FlowDistanceOp(Operation):
                                        direction)
         lat = np.ma.masked_where(direction==flow_dir_ds.nodata, lat)
         lon = np.ma.masked_where(direction==flow_dir_ds.nodata, lon)
-        
+
         distance = self.dir2dist(
                 lat, lon, direction, res, flow_dir_ds.nodata)
 
         flow_dist_ds = GDALDataset(
                 self.paths['flow-distance'], template=flow_dir_ds)
-        
+
         # Fix masking side-effects - not sure why this needs to be done
         flow_dist_ds.nodata = -9999
         distance = distance.filled(flow_dist_ds.nodata)
         distance[distance==None] = flow_dist_ds.nodata
         distance = distance.astype(np.float32)
         flow_dist_ds.array = distance
-        
+
         return {'flow-distance': flow_dist_ds}
 
 
@@ -623,7 +618,7 @@ class FlowDistanceEuclideanOp(FlowDistanceOp):
 
     def distance(self, lon1, lat1, lon2, lat2):
         return np.sqrt((lon2 - lon1)**2 + (lat2 - lat1)**2)
-    
+
 class SourceAreaOp(Operation):
 
     title = 'Source Area/Flow Accumulation'
@@ -640,11 +635,11 @@ class SourceAreaOp(Operation):
         source_area_ds = GDALDataset(self.paths['source-area'])
         source_area_ds.nodata = 0
         return {'source-area': source_area_ds}
-    
-    
+
+
 class StreamDefinitionByThresholdOp(Operation):
     """ Run the TauDEM Stream Definition By Threshold Command """
-    
+
     title = 'Stream Definition By Threshold'
     name = 'stream-definition-threshold'
     output_types = [OutputType('stream-raster', 'tif')]
@@ -658,37 +653,37 @@ class StreamDefinitionByThresholdOp(Operation):
         stream_raster_ds = GDALDataset(
                 self.paths['stream-raster'], filetype='tif')
         return {'stream-raster': stream_raster_ds}
-    
-    
+
+
 class MoveOutletsToStreamOp(Operation):
     """ Run the TauDEM Move Outlets to Streams Command """
-    
+
     title = 'Move Outlets to Streams'
     name = 'snap-outlet'
     output_types = [
         OutputType('outlet-on-stream-nosrs', 'shp'),
         OutputType('outlet-on-stream', 'shp')
     ]
-    
+
     def run(self, flow_dir_ds, stream_ds, outlet_ds):
         subprocess.call(['moveoutletstostrm',
                          '-p', flow_dir_ds.filepath.path,
                          '-src', stream_ds.filepath.path,
                          '-o', outlet_ds.filepath.path,
                          '-om', self.paths['outlet-on-stream-nosrs'].path])
-        
+
         # Copy spatial reference from original outlet
         in_ds = BoundaryDataset(self.paths['outlet-on-stream-nosrs'])
         out_ds = BoundaryDataset(self.paths['outlet-on-stream'],
                                  update=True).new()
-        
+
         # Create layer with outlet srs
         in_lyr = in_ds.dataset.GetLayer()
         outlet_lyr = outlet_ds.dataset.GetLayer()
         srs = outlet_lyr.GetSpatialRef()
         geom_type = in_lyr.GetLayerDefn().GetGeomType()
         out_lyr = out_ds.dataset.CreateLayer('outlet', srs, geom_type)
-        
+
         # Copy outlet in correct srs
         outlet = in_lyr.GetFeature(0)
         out_feature = ogr.Feature(out_lyr.GetLayerDefn())
@@ -700,8 +695,8 @@ class MoveOutletsToStreamOp(Operation):
         in_ds.dataset.Destroy()
         out_ds = BoundaryDataset(self.paths['outlet-on-stream'])
         return {'outlet-on-stream': out_ds}
-    
-    
+
+
 class LabelGagesOp(Operation):
     """ Add a sequential id field to each outlet in a shapefile """
 
@@ -713,7 +708,7 @@ class LabelGagesOp(Operation):
         ## Fix this - modify dataset at the new location, not the old
         outlet_ds.chmod(True)
         outlet_path = outlet_ds.filepath
-        
+
         layer = outlet_ds.dataset.GetLayer()
         id_field = ogr.FieldDefn('id', ogr.OFTInteger)
         layer.CreateField(id_field)
@@ -735,21 +730,21 @@ class LabelGagesOp(Operation):
                 self.paths['labelled-outlet'].ext(
                     os.path.splitext(a_file)[1][1:]))
         outlet_ds = BoundaryDataset(self.paths['labelled-outlet'])
-        
+
         return {'labelled-outlet': outlet_ds}
-    
-    
+
+
 class GageWatershedOp(Operation):
-    """ 
-    Run the TauDEM Gage Watershed Command 
+    """
+    Run the TauDEM Gage Watershed Command
 
     Raster labeling each point by which gage it drains to directly
     """
-    
+
     title = 'Gage Watershed'
     name = 'gage-watershed'
     output_types = [OutputType('gage-watershed', 'tif')]
-    
+
     def run(self, flow_dir_ds, outlet_ds):
         subprocess.call(['gagewatershed',
                          '-p', flow_dir_ds.filepath.path,
@@ -757,11 +752,11 @@ class GageWatershedOp(Operation):
                          '-gw', self.paths['gage-watershed'].path])
         gage_watershed_ds = GDALDataset(self.paths['gage-watershed'])
         return {'gage-watershed': gage_watershed_ds}
-        
-    
+
+
 class PeukerDouglasStreamDefinitionOp(Operation):
     """ Run the TauDEM Peuker Douglas Stream Definition Command """
-    
+
     title = 'Peuker Douglas Stream Definition'
     name = 'stream-def-pd'
     output_types = [
@@ -769,7 +764,7 @@ class PeukerDouglasStreamDefinitionOp(Operation):
         OutputType('drop-analysis', 'txt'),
         OutputType('stream-definition', 'tif')
     ]
-    
+
     def run(self, no_sinks_ds, flow_dir_ds, source_area_ds, outlet_ds):
         # The threshold range should be selected based on the raster size
         # Something like 10th to 99th percentile of flow accumulation?
@@ -815,7 +810,7 @@ class PeukerDouglasStreamDefinitionOp(Operation):
             'stream-definition': stream_definition_ds
         }
 
-    
+
 class DinfFlowDirOp(Operation):
     """ Compute Slope and Aspect from a DEM """
 
@@ -836,9 +831,9 @@ class DinfFlowDirOp(Operation):
         return {'slope': slope_ds, 'aspect': aspect_ds}
 
 class Slope(Operation):
-    """ 
-    Compute Slope from Elevation 
-    
+    """
+    Compute Slope from Elevation
+
     This operation REQUIRES a projected coordinate system in the same
     units as elevation!
     """
@@ -852,18 +847,18 @@ class Slope(Operation):
         array = elevation_ds.array.astype(np.float64)
         array[array==elevation_ds.nodata] = np.nan
         grad = np.gradient(array, elevation_ds.res.x, elevation_ds.res.y)
-        
+
         # Find the length of the longest path uphill
         stack = np.dstack(grad)
         h = np.linalg.norm(stack, axis=2)
-        
+
         # Compute the angle
         slope_rad = np.arctan(h)
 
         # Convert to degrees
         slope = slope_rad / np.pi * 180.
         slope[np.isnan(slope)] = elevation_ds.nodata
-        
+
         slope_ds = GDALDataset(self.paths['slope'], template=elevation_ds)
         slope_ds.array = slope
         return {'slope': slope_ds}
@@ -882,7 +877,7 @@ class SoilDepthOp(Operation):
             max_slope=30.0, max_source=100000.0, max_elev=1500.0,
             pow_slope=0.25, pow_source=1.0, pow_elev=0.75):
         wt_total = float(wt_slope + wt_source + wt_elev)
-        
+
         if not wt_total == 1.0:
             logging.warning('Soil depth weights do not add up to 1.0 - scaling')
             wt_slope = wt_slope / wt_total
@@ -911,7 +906,7 @@ class SoilDepthOp(Operation):
 
 class StreamNetworkOp(Operation):
     """ Run the TauDEM Stream Reach and Watershed Command """
-    
+
     title = 'Stream Network'
     name = 'stream-network'
     output_types = [
@@ -932,7 +927,7 @@ class StreamNetworkOp(Operation):
         'monitoring_point_id',
         'network_magnitude'
     ]
-    
+
     coord_colnames = [
         'x',
         'y',
@@ -940,10 +935,10 @@ class StreamNetworkOp(Operation):
         'elevation',
         'contributing_area'
     ]
-    
+
     def run(self, no_sinks_ds, flow_dir_ds, source_area_ds,
             pd_stream_def_ds, outlet_ds):
-        
+
         subprocess.call([
             'streamnet',
             '-p', flow_dir_ds.filepath.path,
@@ -956,7 +951,7 @@ class StreamNetworkOp(Operation):
             '-coord', self.paths['coord'].path,
             '-net', self.paths['network'].path,
             '-w', self.paths['watershed'].path])
-            
+
         tree_ds = DataFrameDataset(
                 self.paths['tree'], delimiter='\t',
                 header=None, names=self.tree_colnames)
@@ -971,10 +966,10 @@ class StreamNetworkOp(Operation):
             'watershed': GDALDataset(self.paths['watershed'])
         }
 
-        
+
 class DHSVMNetworkOp(Operation):
     """ Run the TauDEM Stream Reach and Watershed Command """
-    
+
     title = 'DHSVM Network'
     name = 'dhsvm-network'
     output_types = [
@@ -983,7 +978,7 @@ class DHSVMNetworkOp(Operation):
         OutputType('state', 'csv'),
         OutputType('class', 'csv')
     ]
-        
+
     net_colnames = [
         u'LINKNO',
         u'order',
@@ -1004,7 +999,7 @@ class DHSVMNetworkOp(Operation):
         'effdepth',
         'effwidth'
     ]
-    
+
     class_properties = pd.DataFrame.from_records({
         'class':    [1,   2,   3,   4,   5,   6,
                      7,   8,   9,   10,  11,  12,
@@ -1024,7 +1019,7 @@ class DHSVMNetworkOp(Operation):
     def get_class(self, row):
         slope = row['Slope']
         mean_cont_area = row['meanContArea']
-        
+
         hydclass = 1
         if slope > 0.002: hydclass += 6
         if slope > 0.01: hydclass += 6
@@ -1033,14 +1028,14 @@ class DHSVMNetworkOp(Operation):
         if mean_cont_area > 20000000: hydclass += 1
         if mean_cont_area > 30000000: hydclass += 1
         if mean_cont_area > 40000000: hydclass += 1
-            
+
         return hydclass
-    
+
     def run(self, tree_ds, coord_ds, network_ds, watershed_ds,
                 soil_depth_ds, flow_distance_ds):
         coord_df = coord_ds.dataset
         tree_df = tree_ds.dataset
-        
+
         ## Convert network and watershed input to dataframes
         # Network
         net_df = gpd.read_file(network_ds.filepath.path)
@@ -1062,7 +1057,7 @@ class DHSVMNetworkOp(Operation):
                  'efflength': flow_distance_ds.array.flatten(),
                  'channel_id': channelid_arr.flatten()}
         )
-        
+
         ## STREAM NETWORK FILE
         # Compute mean contributing area
         net_df['meanContArea']  = (net_df['USContArea'] +
@@ -1071,7 +1066,7 @@ class DHSVMNetworkOp(Operation):
         # Determine hydrologic class and related quantities
         net_df['class'] = net_df.apply(self.get_class, axis=1)
         net_df = net_df.join(self.class_properties, on='class')
-        
+
         # Set a minimum value for the slope and length
         net_df.loc[net_df['Length'] <= 0.00001, 'Length'] = 0.00001
         net_df.loc[net_df['Slope'] <= 0.00001, 'Slope'] = 0.00001
@@ -1088,7 +1083,7 @@ class DHSVMNetworkOp(Operation):
         layers.reverse()
         net_df = pd.concat(layers)
         net_df['order'] = range(1, reordered + 1)
-        
+
         ## STREAM MAP FILE
         # Filter out cells with no channel
         channelid_df = channelid_df[channelid_df['channel_id'] != nodata]
@@ -1110,7 +1105,7 @@ class DHSVMNetworkOp(Operation):
         map_df['channel_id'] += 1
         net_df['LINKNO'] += 1
         net_df['DSLINKNO'] += 1
-        
+
         ## SELECT COLUMNS AND SAVE
         # Extract stream network file columns from network shapefile
         # Must reverse order, or DHSVM will not route correctly!
@@ -1123,14 +1118,14 @@ class DHSVMNetworkOp(Operation):
         net_df = net_df[::-1]
         net_df[self.net_colnames].to_csv(
                 self.paths['network'].path, **csvargs)
-        
+
         map_df[self.map_colnames].to_csv(self.paths['map'].path, **csvargs)
-        
+
         net_df.sort_values(['order'])[self.state_colnames].to_csv(
                 self.paths['state'].path, **csvargs)
 
         self.class_properties.to_csv(self.paths['class'].path, **csvargs)
-                
+
         return {
             'network': DataFrameDataset(
                     self.paths['network'], **csvargs),
@@ -1138,11 +1133,11 @@ class DHSVMNetworkOp(Operation):
             'state': DataFrameDataset(self.paths['state'], **csvargs),
             'class': DataFrameDataset(self.paths['class'], **csvargs)
         }
-        
+
 
 class RasterToShapefileOp(Operation):
     """ Convert a raster to a shapefile """
-    
+
     title = 'Raster to Shapefile'
     name = 'raster-to-shapefile'
     output_type = 'shapefile'
@@ -1175,7 +1170,7 @@ class RasterToShapefileOp(Operation):
 
 class LatLonToShapefileOp(Operation):
     """ Create a shapefile with a single point """
-    
+
     title = 'Coordinate to Shapefile'
     name = 'coordinate-to-shapefile'
     output_types = [OutputType('shapefile', 'shp')]
@@ -1215,7 +1210,7 @@ class UpscaleFlowDirectionOp(Operation):
     @property
     def resolution(self):
         return self.kwargs['template_ds'].resolution
-    
+
     def run(self, flow_acc_ds, template_ds):
         flowgen_path = ScriptPath('flowgen', filename='flowgen').configure(
                                   self.run_config)
@@ -1226,7 +1221,7 @@ class UpscaleFlowDirectionOp(Operation):
 
         # Flowgen seems to require an upside down array ??
         flow_acc_ds_long = np.flipud(flow_acc_ds_long)
-        
+
         with open(flow_acc_path.asc, 'w') as flow_acc_file:
             flow_acc_ds_long.tofile(flow_acc_file)
 
@@ -1241,10 +1236,10 @@ class UpscaleFlowDirectionOp(Operation):
                          str(int(round(upscale_num.x))), '-v'])
 
         # Load ascii data into dataset with spatial reference
-        flow_dir_ds = GDALDataset(self.paths['flow-direction'], 
+        flow_dir_ds = GDALDataset(self.paths['flow-direction'],
                                   template=template_ds)
         flow_dir_array = np.loadtxt(self.paths['flow-direction'].asc)
-        
+
         # Flip array back
         flow_dir_array = np.flipud(flow_dir_array)
 
@@ -1253,14 +1248,14 @@ class UpscaleFlowDirectionOp(Operation):
         flow_dir_array[np.isnan(flow_dir_array)] = -9999
         flow_dir_ds.nodata = -9999
         flow_dir_ds.array = flow_dir_array
-        
+
         return {'flow-direction': flow_dir_ds}
 
-    
+
 class ConvertOp(Operation):
 
     output_types = [OutputType('flow-direction', 'gtif')]
-    
+
     def run(self, flow_dir_ds):
         converted_ds = GDALDataset(
                 self.paths['flow-direction'], template=flow_dir_ds)
@@ -1270,13 +1265,13 @@ class ConvertOp(Operation):
                 flow_dir_ds.array==flow_dir_ds.nodata,
                 flow_dir_ds.array)
         input_array.set_fill_value(flow_dir_ds.nodata)
-        
+
         converted = convert_array(input_array)
         converted_ds.array = converted.filled()
         return {'flow-direction': converted_ds}
 
 class NorthCWToEastCCWOp(ConvertOp):
-    
+
     title = 'North CW (RVIC) to East CCW (TauDEM) Flow Directions'
     name = 'ncw-to-eccw'
     filename_format = 'eastccw_{output_label}'
@@ -1286,15 +1281,15 @@ class NorthCWToEastCCWOp(ConvertOp):
 
 
 class EastCCWToNorthCWOp(ConvertOp):
-    
+
     title = 'East CCW (TauDEM) to North CW (RVIC) Flow Directions'
     name = 'eccw-to-ncw'
     filename_format = 'northcw_{output_label}'
 
     def convert(self, array):
         return (3 - array) % 8 + 1
-    
-    
+
+
 class BasinIDOp(Operation):
     '''
     Generates an RVIC-acceptable basin ID file from a mask
@@ -1308,7 +1303,7 @@ class BasinIDOp(Operation):
 
     def run(self, path, mask_ds):
         basin_id_ds = GDALDataset(self.path, template=mask_ds)
-        
+
         # Compute basin ID array
         basin_id_ds.array[np.where(basin_id_ds.array==1)] = 1
         basin_id_ds.array[np.where(basin_id_ds.array!=1)] = basin_id_ds.nodata
@@ -1364,14 +1359,14 @@ class Melt(Operation):
         return True
 
 class NLCDtoDHSVM(Operation):
-    """ 
-    Convert vegetation classes from the National Land Cover 
-    Database to corresponding DHSVM values 
+    """
+    Convert vegetation classes from the National Land Cover
+    Database to corresponding DHSVM values
     """
 
     title = 'Remap NLCD to DHSVM'
     name = 'nlcd-to-dhsvm'
-    output_types = [OutputType('soil-type', 'gtif')]
+    output_types = [OutputType('veg-type', 'gtif')]
 
     remap_table = {
         11: 14,
@@ -1400,8 +1395,8 @@ class NLCDtoDHSVM(Operation):
         for nlcd, dhsvm in self.remap_table.items():
             array[nlcd_ds.array==nlcd] = dhsvm
         nlcd_ds.array = array
-        return {'soil-type': nlcd_ds}
-        
+        return {'veg-type': nlcd_ds}
+
 class ShadingOp(Operation):
     """ Compute Slope and Aspect from a DEM """
 
@@ -1431,7 +1426,7 @@ class ShadingOp(Operation):
                          self.run_config['basin_id'],
                          lat, lon, cell_size, rows, cols,
                          self.paths['solar']])
-        return 
+        return
 
 class WriteOneVarNetCDFOp(Operation):
     """ Write datasets to a netcdf file """
@@ -1442,13 +1437,13 @@ class WriteOneVarNetCDFOp(Operation):
     units = NotImplemented
     nc_format='NETCDF4_CLASSIC'
     fill = NotImplemented
-    
+
     def run(self, input_ds):
         ncfile = nc4.Dataset(
                 self.paths['netcdf'].path, 'w', format=self.nc_format)
         ncfile.history = 'Created using lsmutils {}'.format(
                 datetime.datetime.now())
-    
+
         array = input_ds.array
         nodata = input_ds.nodata
         array[array==nodata] = self.fill

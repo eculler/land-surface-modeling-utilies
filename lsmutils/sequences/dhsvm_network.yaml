@@ -17,7 +17,7 @@ operations:
       min-depth: soil-min-depth
       max-depth: soil-max-depth
     out:
-      soil-depth
+      soil-depth: soil-depth
   - !Operation
     name: eccw-to-ncw
     in:

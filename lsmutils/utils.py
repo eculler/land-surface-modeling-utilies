@@ -4,49 +4,6 @@ import datetime
 import yaml
 import numpy as np
 
-def write_netcdf(out_uri, var_dict, fill=-99):
-    ncfile = nc4.Dataset(out_uri, 'w', format='NETCDF4_CLASSIC')
-    ncfile.history = 'Created using rvic_prep.py {}'.format(
-            datetime.datetime.now())
-    
-    dims_created = False
-    for var, [ds, dtype, units] in var_dict.iteritems():
-        array = ds.array
-        nodata = ds.nodata
-        array[array==nodata] = fill
-        
-        if not dims_created:
-            t_dim = ncfile.createDimension("time", None)
-            t_var = ncfile.createVariable("time", "f8", ("time",))
-            t_var.units = 'time'
-            t_var[:] = np.array([0])
-            
-            lons = ds.cgrid.lon
-            lon_dim = ncfile.createDimension("lon", len(lons))
-            lon_var = ncfile.createVariable("lon", "f8", ("lon",))
-            lon_var[:] = lons
-            lon_var.units = 'degrees_east'
-            
-            lats = ds.cgrid.lat
-            lat_dim = ncfile.createDimension("lat", len(lats))
-            lat_var = ncfile.createVariable("lat", "f8", ("lat",))
-            lat_var[:] = lats
-            lat_var.units = 'degrees_north'
-
-            #fill_dim = ncfile.createDimension('_FillValue', 1)
-            #fill_var = ncfile.createVariable('_FillValue', 'i', ('_FillValue',))
-            #fill_var = fill
-
-            dims_created = True
-
-        ncvar = ncfile.createVariable(var, dtype, ('time', 'lat', 'lon'))
-        ncvar.missing_value = fill
-        ncvar.units = units
-        ncvar[0:1,:,:] = np.expand_dims(array, axis=0)
-        
-    ncfile.close()
-    logging.info('Netcdf file written to {}'.format(out_uri))
-
 class CoordProperty(yaml.YAMLObject):
     
     yaml_tag = u"!Coord"

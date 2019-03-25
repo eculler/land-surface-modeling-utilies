@@ -1,0 +1,27 @@
+!OpSequence
+name: align
+title: Align Datasets
+doc: Matches dataset projection, resolution, and extent to a template.
+operations:
+  - !Operation
+    name: align
+    in:
+      input-ds: input
+      template-ds: template
+      padding: padding
+    out:
+      aligned: clipped
+  - !Operation
+    name: reproject-raster
+    in:
+      input-ds: clipped
+      template-ds: template
+    out:
+      reprojected: reprojected
+  - !Operation
+    name: align
+    in:
+      input-ds: reprojected
+      template-ds: template
+    out:
+      aligned: aligned

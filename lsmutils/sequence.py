@@ -9,7 +9,6 @@ import yaml
 
 from .calibrate import CaseCollection
 from .operation import Operation
-from .utils import write_netcdf
 
 
 class OperationSequence(yaml.YAMLObject):
@@ -24,8 +23,8 @@ class OperationSequence(yaml.YAMLObject):
         self.name = name
         self.title = title
         self.doc = doc
-        self.inpt = None
-        self.out = None
+        self.inpt = {}
+        self.out = {}
         self.id = ''.join([random.choice(string.ascii_letters + string.digits)
                            for n in range(6)])
 
@@ -39,11 +38,14 @@ class OperationSequence(yaml.YAMLObject):
                 new_labels.update(step.new_labels)
                 self.operations.extend(step.operations)
             else:
+                logging.debug('New labels:')
+                for key, value in new_labels.items():
+                    logging.debug('    %s <- %s', key, value)
                 step.relabel(new_labels)
                 self.operations.append(step)
 
         logging.debug('%s operation computes %s', self.name, self.computes)
-        
+
     @classmethod
     def from_yaml(cls, loader, node):
         seq_class = cls
@@ -56,7 +58,7 @@ class OperationSequence(yaml.YAMLObject):
             seq = yaml.load(seq_def)
             seq.configure(fields['in'], fields['out'])
             return seq
-        
+
         return cls(**fields)
 
     def configure(self, inpt, out):
@@ -64,7 +66,7 @@ class OperationSequence(yaml.YAMLObject):
         self.out = out
         for op in self.operations:
             op.relabel(self.new_labels)
-    
+
     def __repr__(self):
         repr_fmt = ('OperationSequence(name={name}, ' +
                     'doc={doc}, operations={operations})')
@@ -83,12 +85,16 @@ class OperationSequence(yaml.YAMLObject):
     @property
     def new_labels(self):
         if not self._new_labels:
+            print(self.out)
             self._new_labels = {
+                value: key for key, value in self.out.items()}
+            self._new_labels.update({
                 output: '{}_{}'.format(output, self.id)
                 for op in self.operations
                 for output in op.out.values()
                 if not output in self.out
-            }
+            })
+            self._new_labels.update(self.inpt)
         return self._new_labels
 
     @property
@@ -98,23 +104,21 @@ class OperationSequence(yaml.YAMLObject):
             for inpt in op.inpt.values()
             if not inpt in self.computes
         ]
-        
+
     def run(self, case):
         logging.info('Running {} sequence'.format(self.title))
-        
-        for op in self.operations:
-            all_data = copy.copy(self.inpt)
-            all_data.update(case.dir_structure.datasets)
-            
-            inpt_data = {
-                key.replace('-', '_'): all_data[value]
-                for key, value in op.inpt.items()
-                if value in all_data}
-            inpt_data.update({
-                key: value for key, value in op.inpt.items()
-                if not value in all_data})
 
-            logging.debug('Files located at:')
+        for op in self.operations:
+            inpt_data = copy.deepcopy(op.inpt)
+            # Get datasets from the case, if data exists already
+            inpt_data.update({
+                key: case.dir_structure.data[value]
+                for key, value in inpt_data.items()
+                if value in case.dir_structure.data
+            })
+
+            if inpt_data:
+                logging.debug('Files located at:')
             for key, loc in inpt_data.items():
                 if hasattr(loc, 'filepath'):
                     logging.debug('    %s <- %s', key, loc.filepath.path)
@@ -122,24 +126,37 @@ class OperationSequence(yaml.YAMLObject):
             output_data = op.configure(
                     case.cfg, paths=case.dir_structure.output_files,
                     **inpt_data).save()
-                
-            case.dir_structure.update_datasets({
-                out_key: output_data[op_key] 
+
+            logging.debug('Output files:')
+            for key, ds in output_data.items():
+                if hasattr(ds, 'filepath'):
+                    logging.debug('    %s <- %s', key, ds.filepath.path)
+
+            new_data = {
+                out_key: output_data[op_key]
                 for op_key, out_key in op.out.items()
-                if op_key in output_data})
-        
+                if op_key in output_data
+            }
+
+            logging.debug('Files added to case:')
+            for key, ds in new_data.items():
+                if hasattr(ds, 'filepath'):
+                    logging.debug('    %s <- %s', key, ds.filepath.path)
+
+            case.dir_structure.update_data(new_data)
+
         return case
 
 def run_cfg(cfg):
-    logging.debug('Loaded configuration \n%s', yaml.dump(cfg))
-    
+    #logging.debug('Loaded configuration \n%s', yaml.dump(cfg))
+
     collection = CaseCollection(cfg)
     cases = collection.cases
     case = cases[0]
-    
+
     master_seq = OperationSequence(cfg['operations'])
     master_seq.configure(
-        inpt=cfg['in'],
+        inpt={key: key for key in list(cfg['in'].keys())},
         out=case.dir_structure.output_files)
 
     logging.info('Operations to run:')
@@ -155,5 +172,5 @@ def run_cfg(cfg):
     # Clean up
     tmp_path = os.path.join(cfg['base_dir'], cfg['temp_dir'])
     shutil.rmtree(tmp_path)
-    
+
     return case

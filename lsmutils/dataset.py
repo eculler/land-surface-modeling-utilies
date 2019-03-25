@@ -10,7 +10,7 @@ import pandas as pd
 import logging
 from math import ceil, floor
 
-from .utils import CoordProperty
+from .utils import CoordProperty, BBox
 
 class Dataset(object):
 
@@ -19,12 +19,17 @@ class Dataset(object):
 
 class DataFrameDataset(Dataset):
 
+    filetypes = {
+        'csv': 'csv',
+        'tsv': 'csv'
+    }
+
     def __init__(self, filepath, filetype='csv', **kwargs):
         self.filepath = filepath
         self.filetype = filetype
         self.csvargs = kwargs
         self._dataset = None
-        
+
     @property
     def dataset(self):
         if self._dataset == None:
@@ -32,19 +37,20 @@ class DataFrameDataset(Dataset):
         return self._dataset
 
     def save(self):
-        self.saveas('csv')
-        
+        self.saveas(filetype)
+
     def saveas(self, filetype, datatype=None):
-        self.dataset.to_csv(self.filepath.ext[filetype], **csvargs)
+        if self.filetypes[filetype] == 'csv':
+            self.dataset.to_csv(self.filepath.ext[filetype], **csvargs)
 
 class SpatialDataset():
-    
+
     def __init__(self, ds_min, ds_max, padding=None):
-        
+
         if not padding is None:
             ds_min = ds_min - padding
             ds_max = ds_max + padding
-            
+
         self._min = ds_min
         self._max = ds_max
         self._resolution = None
@@ -52,6 +58,7 @@ class SpatialDataset():
         self._ur = None
         self._ll = None
         self._lr = None
+        self._bbox = None
         self._warp_output_bounds = None
 
     @property
@@ -61,7 +68,7 @@ class SpatialDataset():
     @property
     def max(self):
         return self._max
-    
+
     @property
     def ul(self):
         if not self._ul:
@@ -87,6 +94,12 @@ class SpatialDataset():
         return self._lr
 
     @property
+    def bbox(self):
+        if not self._bbox:
+            self._bbox = BBox(self.ll, self.ur)
+        return self._bbox
+
+    @property
     def warp_output_bounds(self):
         if not self._warp_output_bounds:
             self._warp_output_bounds = [self.min.x, self.min.y,
@@ -100,7 +113,7 @@ class SpatialDataset():
                                             self.cmax.x, self.cmax.y]
         return self._rev_warp_output_bounds
 
-    
+
 class GDALDataset(SpatialDataset):
 
     filetypes = {
@@ -109,7 +122,7 @@ class GDALDataset(SpatialDataset):
         'gtif': 'GTiff',
         'tif': 'GTiff'
     }
-    
+
     def __init__(self, filepath, template=None, filetype='gtif'):
         self.filepath = filepath
         self.filetype = filetype
@@ -136,6 +149,7 @@ class GDALDataset(SpatialDataset):
         self._ur = None
         self._ll = None
         self._lr = None
+        self._bbox = None
         self._warp_output_bounds = None
         self._rev_warp_output_bounds = None
 
@@ -146,11 +160,11 @@ class GDALDataset(SpatialDataset):
         if template:
             driver = gdal.GetDriverByName(self.filetypes[filetype])
             self._dataset = driver.CreateCopy(filepath.path, template.dataset)
-        
+
     @property
     def dataset(self):
         gdal_path = 'unknown file'
-        
+
         if not self._dataset:
             if not hasattr(self.filepath, 'file_id'):
                 gdal_path = self.filepath
@@ -161,10 +175,10 @@ class GDALDataset(SpatialDataset):
                         path = self.filepath.path,
                         variable = self.filepath.netcdf_variable)
             self._dataset = gdal.Open(gdal_path, self.mod)
-            
+
         if not self._dataset:
             logging.warning('%s did not load as raster' % gdal_path)
-            
+
         return self._dataset
 
     @dataset.setter
@@ -178,7 +192,7 @@ class GDALDataset(SpatialDataset):
 
     def save(self):
         self.saveas('gtif')
-        
+
     def saveas(self, filetype, datatype=None):
         if datatype is None:
             datatype = self.datatype
@@ -193,7 +207,7 @@ class GDALDataset(SpatialDataset):
     def chmod(self, mod):
         if self.mod == mod:
             return self
-        
+
         self.dataset.FlushCache()
         self._dataset = None
         self._dataset = gdal.Open(self.filepath.path, mod)
@@ -230,7 +244,7 @@ class GDALDataset(SpatialDataset):
         if not self._datatype:
             self._datatype=self.dataset.GetRasterBand(1).DataType
         return self._datatype
-    
+
     @property
     def nodata(self):
         if not self._nodata:
@@ -250,7 +264,7 @@ class GDALDataset(SpatialDataset):
         self._masked = None
         self._dataset = None
         self._nodata = self.dataset.GetRasterBand(1).GetNoDataValue()
-    
+
     @property
     def resolution(self):
         if not self._resolution:
@@ -261,7 +275,7 @@ class GDALDataset(SpatialDataset):
     @property
     def res(self):
         return self.resolution
-    
+
     @property
     def array(self):
         if self._array is None:
@@ -286,10 +300,9 @@ class GDALDataset(SpatialDataset):
         # Set datatype to match the new array if necessary
         ds = self.dataset
         nodata = self.nodata
-        
+
         # GDAL doesn't have 64-bit integers
         if new_array.dtype == np.int64:
-            nodata = nodata.astype(np.int32)
             new_array = new_array.astype(np.int32)
         new_dtype = gdal_array.NumericTypeCodeToGDALTypeCode(new_array.dtype)
         if not new_dtype == ds.GetRasterBand(1).DataType:
@@ -344,7 +357,7 @@ class GDALDataset(SpatialDataset):
         if not self._max:
             res_x = self.geotransform[1]
             res_y = self.geotransform[5]
-            
+
             x_bounds = (self.geotransform[0] + res_x * self.size.x,
                         self.geotransform[0])
             y_bounds = (self.geotransform[3] + res_y * self.size.y,
@@ -360,7 +373,7 @@ class GDALDataset(SpatialDataset):
         if not self._cmax:
             res_x = self.geotransform[1]
             res_y = self.geotransform[5]
-            
+
             x_bounds = (self.geotransform[0] + res_x * self.size.x,
                         self.geotransform[0])
             y_bounds = (self.geotransform[3] + res_y * self.size.y,
@@ -374,7 +387,7 @@ class GDALDataset(SpatialDataset):
         if not self._cmin:
             self.cmax
         return self._cmin
-            
+
     @property
     def grid(self):
         if self._grid is None:
@@ -416,13 +429,13 @@ class GDALDataset(SpatialDataset):
                 ds_min=self.gridcmin(res),
                 ds_max=self.gridcmax(res),
                 padding=padding)
-    
+
     @property
     def center(self):
         if not self._center:
             self._center = (self.max - self.min) / 2.
         return self._center
-    
+
 
 class BoundaryDataset(SpatialDataset):
     def __init__(self, filepath, update=False, driver='ESRI Shapefile'):
@@ -442,7 +455,7 @@ class BoundaryDataset(SpatialDataset):
         driver = ogr.GetDriverByName(self.driver)
         self._dataset = driver.CreateDataSource(self.filepath.path)
         return self
-        
+
     @property
     def dataset(self):
         if self._dataset is None:
@@ -464,7 +477,7 @@ class BoundaryDataset(SpatialDataset):
             for i in range(0, n):
                 self._layers.append(self.dataset.GetLayerByIndex(i))
         return self._layers
-    
+
     @property
     def min(self):
         if not self._min:
@@ -496,5 +509,3 @@ class BoundaryDataset(SpatialDataset):
 
     def plot(self, *args, **kwargs):
         pass
-        
-
