@@ -29,7 +29,7 @@ class CaseGroup(yaml.YAMLObject):
 
     def initiate_set(self, case_id):
         raise NotImplementedError
-    
+
 class BaseCaseGroup(Case, yaml.YAMLObject):
 
     yaml_tag = '!BaseCase'
@@ -47,7 +47,7 @@ class BaseCaseGroup(Case, yaml.YAMLObject):
         self.cfg['case_id'] = case_id
         self.dir_structure = self.cfg['structure'].configure(self.cfg)
         return [Case(self.cfg, self.dir_structure)]
-    
+
 class CaseCollection:
 
     def __init__(self, cfg):
@@ -61,19 +61,19 @@ Directory = namedtuple('Directory', ['path', 'contents'])
 class CaseDirStructure(yaml.YAMLObject):
 
     yaml_tag = '!CaseDirectoryStructure'
-    
+
     def __init__(self, idstr, paths):
         self.idstr = idstr
         self.structure = paths
-        self.paths = {}
+        self.locs = {}
         self.date = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')
         self.data = {}
-        
+
         self.path_info = {}
         self.output_files = {}
         layer = [Directory(path=[name], contents=contents)
                  for (name, contents) in self.structure.items()]
-        
+
         while layer:
             next_layer = []
             for directory in layer:
@@ -87,7 +87,7 @@ class CaseDirStructure(yaml.YAMLObject):
                     key: directory.path
                     for key, value in directory.contents.items()
                     if hasattr(value, 'file_id')})
-                
+
                 # Save contents of each directory
                 self.path_info.update(directory.contents)
 
@@ -95,45 +95,50 @@ class CaseDirStructure(yaml.YAMLObject):
                 next_layer += [
                     Directory(directory.path + [key], value)
                     for key, value in directory.contents.items()]
-                    
+
             layer = next_layer
 
     def configure(self, cfg):
+        # Configure locators
         # Add output files
         self.output_files = {
             key: self.path_info[key].configure(
                 cfg, file_id=key, dirname=os.path.join(*loc))
             for key, loc in self.output_files.items()
         }
-        self.paths.update(self.output_files)
-
+        self.locs.update(self.output_files)
         # Add input files
-        self.paths.update({
+        self.locs.update({
             key: path.configure(cfg, file_id=key)
             for key, path in cfg['in'].items()
             if hasattr(path, 'file_id')
         })
 
-        # Add non-file data
+        # Configure datasets
+        # Start with non-file data
         self.data.update(cfg['in'])
-        # Load existing datasets
+        # Add existing datasets
         self.data.update({
-            key: path.dataset 
-            for (key, path) in self.paths.items()
-            if path.isfile
+            key: loc.dataset
+            for (key, loc) in self.locs.items()
+            if loc.isfile
         })
 
-        # Generate path strings
-        self.files = {
-            key: path.path
-            for (key, path) in self.paths.items()}
-        for key, path in self.files.items():
+        # Configure script locations:
+        self.scripts = {}
+        if 'scripts' in cfg:
+            self.scripts.update(
+                {key: loc.path for key, loc in cfg['scripts'].items()})
+
+        # Report input and output files
+        for key, loc in self.locs.items():
             filetype = 'Output' if key in self.output_files else 'Input'
-            logging.info('%s file %s located at %s', filetype, key, path)
+            logging.info('%s file %s located at %s', filetype, key, loc.path)
+
         return self
 
     def update_data(self, new_data):
-        self.paths.update({key: ds.filepath 
+        self.locs.update({key: ds.loc
                            for (key, ds) in new_data.items()})
         self.data.update(new_data)
         return self.data
@@ -142,9 +147,9 @@ class CaseDirStructure(yaml.YAMLObject):
     def from_yaml(cls, loader, node):
         fields = loader.construct_mapping(node, deep=True)
         return cls(**fields)
-        
+
     def new_case(self):
-        for path in self.paths.values():
+        for path in self.locs.values():
             if not os.path.exists(path.dirname):
                 os.makedirs(path.dirname)
         return self

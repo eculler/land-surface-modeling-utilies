@@ -4,24 +4,27 @@ title: Align Datasets
 doc: Matches dataset projection, resolution, and extent to a template.
 operations:
   - !Operation
-    name: align
+    name: crop
     in:
       input-ds: input
       template-ds: template
       padding: padding
+      algorithm: near
     out:
-      aligned: clipped
+      cropped: cropped
   - !Operation
     name: reproject-raster
     in:
-      input-ds: clipped
+      input-ds: cropped
       template-ds: template
+      algorithm: near
     out:
       reprojected: reprojected
   - !Operation
-    name: align
+    name: match-raster
     in:
       input-ds: reprojected
       template-ds: template
+      algorithm: near
     out:
-      aligned: aligned
+      matched: matched

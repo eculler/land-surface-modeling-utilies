@@ -1,3 +1,4 @@
+import calendar
 import datetime
 import logging
 import os
@@ -5,48 +6,52 @@ import yaml
 
 from .dataset import GDALDataset, BoundaryDataset, DataFrameDataset
 
-class Path(yaml.YAMLObject):
+class LocatorMeta(yaml.YAMLObjectMetaclass):
+
+    def __children__(cls):
+        children = {cls.loc_type: cls}
+        for child in cls.__subclasses__():
+            children.update({child.loc_type: child})
+            children.update(child.__children__())
+        return children
+
+class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
     """
     A class to keep track of file structures
     """
+
     yaml_tag = '!File'
+    loc_type = 'file'
 
     file_id = ''
     filename = ''
     dirname = '{temp_dir}'
     default_ext = ''
-    default_name_fmt='{basin_id}_{file_id}'
-    netcdf_variable = ''
+    variable = ''
 
     @classmethod
     def from_yaml(cls, loader, node):
         fields = loader.construct_mapping(node, deep=True)
         return cls(**fields)
 
-    def __init__(self, file_id='',
-                     filename='', dirname='',
-                     default_ext='', default_name_fmt='',
-                     netcdf_variable='',
-                     omit_ext=False):
-        """
-        Set path variables
-        """
-        
+    def __init__(self, file_id='', filename='', dirname='', default_ext='',
+                 variable='', omit_ext=False, **env):
+
         self.file_id = file_id if file_id else self.file_id
-        self.env = None
+        self.env = env
         self.filename = filename if filename else self.filename
         self.dirname = dirname if dirname else self.dirname
         self.default_ext = (
             default_ext if default_ext else self.default_ext)
-        self.default_name_fmt = (
-            default_name_fmt if default_name_fmt else self.default_name_fmt)
-        self.netcdf_variable = (
-            netcdf_variable if netcdf_variable else self.netcdf_variable)
+        self.variable = (
+            variable if variable else self.variable)
         self.omit_ext = omit_ext
+
+        self._dataset = None
 
     def configure(self, cfg, file_id='', dirname=''):
         self.file_id = file_id if file_id else self.file_id
-        self.env = cfg
+        self.env.update(cfg)
         self.env['file_id'] = self.file_id
 
         # Set base directory
@@ -56,14 +61,11 @@ class Path(yaml.YAMLObject):
             self.base_dir = os.getcwd()
 
         # Render filename variables
-        try:
-            self.filename = self.filename.format(**cfg)
-        except AttributeError:
-            self.filename = [fn.format(**cfg) for fn in self.filename]
+        self.filename = self.filename.format(**self.env)
 
         # Render directory name
         self.dirname = dirname if dirname else self.dirname
-        self.dirname = self.dirname.format(**cfg)
+        self.dirname = self.dirname.format(**self.env)
         if not os.path.isabs(self.dirname):
             self.dirname = os.path.join(self.base_dir, self.dirname)
 
@@ -72,33 +74,14 @@ class Path(yaml.YAMLObject):
             os.makedirs(self.dirname)
 
         return self
-    
-    @property
-    def default_name(self):
-        time = datetime.datetime.now().strftime('%Y%m%d_%H%M')
-        return self.default_name_fmt.format(time=time, **self.env)
-        
+
     def _path(self, filename, extension):
         if extension:
-            try:
-                ext_name = '.'.join([filename, extension])
-                path = os.path.join(self.dirname, ext_name)
-            except TypeError:
-                ext_name = ['.'.join([fn, extension]) for fn in filename]
-                path = [os.path.join(self.dirname, bn) for bn in ext_name]
-        else:
-            try:
-                path = os.path.join(self.dirname, filename)
-            except TypeError:
-                path = [os.path.join(self.dirname, fn) for fn in filename]
-        return path
-    
-    def ext(self, extension):        
-        try:
-            full_path = self._path(self.filename, extension)
-        except AttributeError:
-            full_path = [self._path(fn, extension) for fn in self.filename]
-        return full_path
+            filename = '.'.join([filename, extension])
+        return os.path.join(self.dirname, filename)
+
+    def ext(self, extension):
+        return self._path(self.filename, extension)
 
     @property
     def path(self):
@@ -110,32 +93,16 @@ class Path(yaml.YAMLObject):
 
     @property
     def exists(self):
-        try:
-            exists = os.path.exists(self.path)
-        except TypeError:
-            # Allow a list of paths
-            exists = all([os.path.exists(path) for path in self.path])
-        return exists
-    
+        return os.path.exists(self.path)
+
     @property
     def isfile(self):
-        try:
-            isfile = os.path.isfile(self.path)
-        except TypeError:
-            # Allow a list of paths
-            is_file_list = [os.path.isfile(path) for path in self.path]
-            if not all(is_file_list):
-                unfiles = [pth for pth in self.path if not os.path.isfile(pth)]
-                for path in unfiles:
-                    logging.debug('{} is not a file'.format(path))
-                return False
-            return True
-        return isfile
-    
+        return os.path.isfile(self.path)
+
     @property
     def cfg(self):
         return self.ext('cfg')
-        
+
     @property
     def gtif(self):
         return self.ext('gtif')
@@ -178,76 +145,116 @@ class Path(yaml.YAMLObject):
 
     @property
     def dataset(self):
-        try:
-            # Don't bother checking for multiple files
-            # if this is already a file
-            os.path.isfile(self.path)
+        if not self._dataset:
             self._dataset = self.get_dataset(self)
-            return self._dataset
-        except Exception:
-            logging.debug('{} is not a file; trying list'.format(self.path))
-        
-        # Try list
-        try:
-            path_list = [
-                Path(filename=fn, dirname=self.dirname,
-                     default_ext=self.default_ext).configure(self.env)
-                for fn in self.filename]
-            self._dataset = [self.get_dataset(pth) for pth in path_list]
-            if not any([ds.dataset is None for ds in self._dataset]):
-                return self._dataset
-        except AttributeError:
-            logging.debug('Unable to load dataset {} as a list'.format(
-                          self.file_id))
-            return None
-        
+        return self._dataset
+
     def get_dataset(self, path):
-        # Check if file exists before loading
-        try:
-            os.path.isfile(path.path)
-        except AttributeError:
+        if not path.exists:
             return None
 
         filetype = self.default_ext if self.default_ext else ''
-        
+
         if filetype=='shp':
             try:
                 dataset = BoundaryDataset(path)
                 if not dataset.dataset is None:
                     return dataset
+                logging.warning('{} failed to load as shapefile'.format(
+                    path.path))
             except Exception:
-                dataset = None
+                logging.error(exc)
+                logging.error('{} failed to load as shapefile'.format(
+                    path.path))
 
         if filetype in DataFrameDataset.filetypes:
             dataset = DataFrameDataset(path, filetype=filetype)
             return dataset
-        
-        # Try raster
+
         try:
             dataset = GDALDataset(path, filetype=filetype)
             if not dataset.dataset is None:
                 return dataset
-            print('{} failed to load as raster'.format(path.path))
+            logging.warning('{} failed to load as raster'.format(path.path))
         except Exception as exc:
-            dataset = None
-            print(exc)
-            print('{} failed to load as raster'.format(path.path))
+            logging.error(exc)
+            logging.error('{} failed to load as raster'.format(path.path))
+
         return None
 
-    def __getitem__(self, key):
-        new_path = Path(
-                file_id=self.file_id,
-                filename=self.filename[key],
-                dirname=self.dirname,
-                default_ext=self.default_ext,
-                default_name_fmt=self.default_name_fmt,
-                netcdf_variable=self.netcdf_variable)
-        if self.env:
-            new_path.configure(self.env)
-        return new_path
 
-    def __iter__(self):
-        raise NotImplementedError
+class LocatorCollection(Locator):
+
+    loc_type = 'list'
+
+    def __init__(self, file_id='', locs=[],
+                 dirname='', default_ext='', variable='', omit_ext=False):
+        self.file_id = file_id
+        self.locs = locs
+
+        self.dirname = dirname
+        self._default_ext = default_ext
+        self.variable = variable
+        self.omit_ext = omit_ext
+
+    @classmethod
+    def from_yaml(cls, loader, node):
+        fields = loader.construct_mapping(node, deep=True)
+        return cls(**fields)
+
+    def configure(self, cfg, file_id='', dirname=''):
+        self.file_id = file_id if file_id else self.file_id
+        self.dirname = dirname if dirname else self.dirname
+        for loc in self.locs:
+            loc.configure(cfg, file_id, dirname)
+        return self
+
+    def isfile(self):
+        return any([loc.isfile for loc in self.locs])
+
+    def dataset(self):
+        return [loc.dataset for loc in self.locs]
+
+    def path(self):
+        return [loc.path for loc in self.locs]
+
+    @property
+    def default_ext(self):
+        return self._default_ext
+
+    @default_ext.setter
+    def default_ext(self, new_ext):
+        for loc in self.locs:
+            loc.default_ext = new_ext
+        self._default_ext = new_ext
+
+
+
+
+class MonthlyLoc(LocatorCollection):
+
+    yaml_tag = '!MonthlyFile'
+    loc_type = 'monthly'
+
+    def __init__(self, filename,
+                 file_id='', dirname='', default_ext='',
+                 variable='', omit_ext=False, **env):
+        locs = []
+        if not 'month' in filename:
+            filename += '.{month:02d}'
+        for month in range(1, 13):
+            loc = Locator(
+                file_id=file_id,
+                filename=filename, dirname=dirname, default_ext=default_ext,
+                variable=variable, omit_ext=omit_ext,
+                month=month, month_name=calendar.month_name[month],
+                month_abbr=calendar.month_abbr[month])
+            locs.append(loc)
+
+        super(MonthlyLoc, self).__init__(file_id, locs)
+
+    def items(self):
+        return {}
 
 class Tile:
 
@@ -261,45 +268,28 @@ class Tile:
         self.abs_min_lon = abs(min_lon)
         self.abs_min_lat = abs(min_lat)
 
-class TilePath(Path):
+class TilePath(LocatorCollection):
 
     yaml_tag = '!Tiles'
+    loc_type = 'tiles'
 
     def __init__(self, file_id='',
                  bbox=[], filename_fmt='', dirname='',
                  default_ext='', default_name_fmt='',
-                 netcdf_variable=''):
+                 variable=''):
         tiles = []
         for lon in range(int(bbox[0]), int(bbox[2])):
             for lat in range(int(bbox[1]), int(bbox[3])):
                 tiles += [Tile(lon, lat)]
         filename = [filename_fmt.format(**vars(tile)) for tile in tiles]
-        print(filename)
+
         super(TilePath, self).__init__(
                 file_id=file_id,
                 filename=filename, dirname=dirname,
                 default_ext=default_ext,
                 default_name_fmt=default_name_fmt,
-                netcdf_variable=netcdf_variable)
+                variable=variable)
 
         # Filter out files that don't exist
         self.filename = [self.filename[i] for i in range(len(self.path))
                              if os.path.exists(self.path[i])]
-
-
-class DirPath(Path):
-
-    yaml_tag = '!Directory'
-    default_name_fmt = ''
-    default_ext = None
-
-# Location of C scripts for generating RVIC files
-class ScriptPath(DirPath):
-
-    dirname = 'src_setup'
-    default_ext = None
-
-class TemplatePath(DirPath):
-
-    file_id = 'templates'
-    dirname = 'templates'

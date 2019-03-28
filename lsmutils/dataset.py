@@ -2,20 +2,14 @@ from osgeo import gdal, gdal_array, ogr, osr
 import numpy as np
 import pandas as pd
 
-#import mpl_toolkits.basemap as bm
-#import matplotlib.pyplot as plt
-#import matplotlib.colors as colors
-#import matplotlib.patches as patches
-
-import logging
 from math import ceil, floor
 
 from .utils import CoordProperty, BBox
 
 class Dataset(object):
 
-    def __init__(self, filepath):
-        self.filepath = filepath
+    def __init__(self, loc):
+        self.loc = loc
 
 class DataFrameDataset(Dataset):
 
@@ -24,8 +18,8 @@ class DataFrameDataset(Dataset):
         'tsv': 'csv'
     }
 
-    def __init__(self, filepath, filetype='csv', **kwargs):
-        self.filepath = filepath
+    def __init__(self, loc, filetype='csv', **kwargs):
+        self.loc = loc
         self.filetype = filetype
         self.csvargs = kwargs
         self._dataset = None
@@ -33,7 +27,7 @@ class DataFrameDataset(Dataset):
     @property
     def dataset(self):
         if self._dataset == None:
-            self._dataset = pd.read_csv(self.filepath.path, **self.csvargs)
+            self._dataset = pd.read_csv(self.loc.path, **self.csvargs)
         return self._dataset
 
     def save(self):
@@ -41,7 +35,7 @@ class DataFrameDataset(Dataset):
 
     def saveas(self, filetype, datatype=None):
         if self.filetypes[filetype] == 'csv':
-            self.dataset.to_csv(self.filepath.ext[filetype], **csvargs)
+            self.dataset.to_csv(self.loc.ext[filetype], **csvargs)
 
 class SpatialDataset():
 
@@ -123,8 +117,8 @@ class GDALDataset(SpatialDataset):
         'tif': 'GTiff'
     }
 
-    def __init__(self, filepath, template=None, filetype='gtif'):
-        self.filepath = filepath
+    def __init__(self, loc, template=None, filetype='gtif'):
+        self.loc = loc
         self.filetype = filetype
 
         # Initialize internal attributes
@@ -159,21 +153,21 @@ class GDALDataset(SpatialDataset):
         # New dataset with template metadata
         if template:
             driver = gdal.GetDriverByName(self.filetypes[filetype])
-            self._dataset = driver.CreateCopy(filepath.path, template.dataset)
+            self._dataset = driver.CreateCopy(loc.path, template.dataset)
 
     @property
     def dataset(self):
         gdal_path = 'unknown file'
 
         if not self._dataset:
-            if not hasattr(self.filepath, 'file_id'):
-                gdal_path = self.filepath
-            elif not self.filepath.netcdf_variable:
-                gdal_path = self.filepath.path
+            if not hasattr(self.loc, 'file_id'):
+                gdal_path = self.loc
+            elif not self.loc.variable:
+                gdal_path = self.loc.path
             else:
                 gdal_path = 'NETCDF:{path}:{variable}'.format(
-                        path = self.filepath.path,
-                        variable = self.filepath.netcdf_variable)
+                        path = self.loc.path,
+                        variable = self.loc.variable)
             self._dataset = gdal.Open(gdal_path, self.mod)
 
         if not self._dataset:
@@ -183,7 +177,7 @@ class GDALDataset(SpatialDataset):
 
     @dataset.setter
     def dataset(self, dataset):
-        self.__init__(self.filepath, filetype=self.filetype)
+        self.__init__(self.loc, filetype=self.filetype)
         self._dataset = dataset
 
     @dataset.deleter
@@ -197,12 +191,12 @@ class GDALDataset(SpatialDataset):
         if datatype is None:
             datatype = self.datatype
         if filetype != self.filetype:
-            gdal.Translate(self.filepath.ext(filetype),
+            gdal.Translate(self.loc.ext(filetype),
                            self.dataset,
                            format=self.filetypes[filetype])
             logging.info('Translated to {ext} with datatype {dt}'.format(
                     ext=filetype, dt=datatype))
-        return GDALDataset(self.filepath, filetype=filetype)
+        return GDALDataset(self.loc, filetype=filetype)
 
     def chmod(self, mod):
         if self.mod == mod:
@@ -210,10 +204,10 @@ class GDALDataset(SpatialDataset):
 
         self.dataset.FlushCache()
         self._dataset = None
-        self._dataset = gdal.Open(self.filepath.path, mod)
+        self._dataset = gdal.Open(self.loc.path, mod)
         if not self.dataset:
             logging.error('Dataset at %s did not load for writing',
-                          self.filepath.path)
+                          self.loc.path)
         self.mod = mod
         return self
 
@@ -309,7 +303,7 @@ class GDALDataset(SpatialDataset):
             geotransform = ds.GetGeoTransform()
             srs = ds.GetProjection()
             driver = ds.GetDriver()
-            ds = driver.Create(self.filepath.path,
+            ds = driver.Create(self.loc.path,
                                new_array.shape[1],
                                new_array.shape[0],
                                1, new_dtype)
@@ -438,8 +432,8 @@ class GDALDataset(SpatialDataset):
 
 
 class BoundaryDataset(SpatialDataset):
-    def __init__(self, filepath, update=False, driver='ESRI Shapefile'):
-        self.filepath = filepath
+    def __init__(self, loc, update=False, driver='ESRI Shapefile'):
+        self.loc = loc
         self.update = update
         self.driver = driver
         self._dataset = None
@@ -453,16 +447,16 @@ class BoundaryDataset(SpatialDataset):
 
     def new(self):
         driver = ogr.GetDriverByName(self.driver)
-        self._dataset = driver.CreateDataSource(self.filepath.path)
+        self._dataset = driver.CreateDataSource(self.loc.path)
         return self
 
     @property
     def dataset(self):
         if self._dataset is None:
-            self._dataset = ogr.Open(self.filepath.path, update=self.update)
+            self._dataset = ogr.Open(self.loc.path, update=self.update)
         if self._dataset is None:
             logging.debug('Dataset at %s did not load as shapefile',
-                          self.filepath.shp)
+                          self.loc.shp)
         return self._dataset
 
     @dataset.deleter

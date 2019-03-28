@@ -110,6 +110,7 @@ class OperationSequence(yaml.YAMLObject):
 
         for op in self.operations:
             inpt_data = copy.deepcopy(op.inpt)
+
             # Get datasets from the case, if data exists already
             inpt_data.update({
                 key: case.dir_structure.data[value]
@@ -118,19 +119,28 @@ class OperationSequence(yaml.YAMLObject):
             })
 
             if inpt_data:
-                logging.debug('Files located at:')
-            for key, loc in inpt_data.items():
-                if hasattr(loc, 'filepath'):
-                    logging.debug('    %s <- %s', key, loc.filepath.path)
+                logging.debug('Input files located at:')
+            for key, ds in inpt_data.items():
+                if hasattr(ds, 'loc'):
+                    logging.debug('    %s <- %s', key, ds.loc.path)
 
+            if case.dir_structure.output_files:
+                logging.debug('Output files located at:')
+            for key, ds in case.dir_structure.output_files.items():
+                if hasattr(ds, 'loc'):
+                    logging.debug('    %s <- %s', key, ds.loc.path)
+
+            # Run operation
             output_data = op.configure(
-                    case.cfg, paths=case.dir_structure.output_files,
+                    case.cfg,
+                    locs=case.dir_structure.output_files,
+                    scripts=case.dir_structure.scripts,
                     **inpt_data).save()
 
-            logging.debug('Output files:')
+            logging.debug('Output files saved to:')
             for key, ds in output_data.items():
-                if hasattr(ds, 'filepath'):
-                    logging.debug('    %s <- %s', key, ds.filepath.path)
+                if hasattr(ds, 'loc'):
+                    logging.debug('    %s <- %s', key, ds.loc.path)
 
             new_data = {
                 out_key: output_data[op_key]
@@ -140,8 +150,8 @@ class OperationSequence(yaml.YAMLObject):
 
             logging.debug('Files added to case:')
             for key, ds in new_data.items():
-                if hasattr(ds, 'filepath'):
-                    logging.debug('    %s <- %s', key, ds.filepath.path)
+                if hasattr(ds, 'loc'):
+                    logging.debug('    %s <- %s', key, ds.loc.path)
 
             case.dir_structure.update_data(new_data)
 
@@ -170,7 +180,8 @@ def run_cfg(cfg):
     case = master_seq.run(case)
 
     # Clean up
-    tmp_path = os.path.join(cfg['base_dir'], cfg['temp_dir'])
-    shutil.rmtree(tmp_path)
+    if cfg['log_level'] > logging.DEBUG:
+        tmp_path = os.path.join(cfg['base_dir'], cfg['temp_dir'])
+        shutil.rmtree(tmp_path)
 
     return case
