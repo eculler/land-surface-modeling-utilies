@@ -5,7 +5,7 @@ import yaml
 import numpy as np
 
 class CoordProperty(yaml.YAMLObject):
-    
+
     yaml_tag = u"!Coord"
 
     def __init__(self, x=None, y=None, lon=None, lat=None, epsg=4326):
@@ -60,7 +60,7 @@ class CoordProperty(yaml.YAMLObject):
 
     def __add__(self, other):
         return CoordProperty(x = (self.x + other.x), y = (self.y + other.y))
-    
+
     def __sub__(self, other):
         return CoordProperty(x = (self.x - other.x), y = (self.y - other.y))
 
@@ -80,13 +80,29 @@ class CoordProperty(yaml.YAMLObject):
         return '{}_{}'.format(self.x, self.y)
 
 class BBox(yaml.YAMLObject):
-    
+
     yaml_tag = u"!BBox"
 
     def __init__(self, llc, urc):
-        self.llc = llc
-        self.urc = urc
+        self._llc = llc
+        self._urc = urc
 
+    @property
+    def llc(self):
+        return self._llc
+
+    @property
+    def urc(self):
+        return self._urc
+
+    @property
+    def min(self):
+        return self._llc
+
+    @property
+    def max(self):
+        return self._urc
+        
     @classmethod
     def from_yaml(cls, loader, node):
         fields = loader.construct_mapping(node, deep=True)

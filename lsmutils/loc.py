@@ -28,6 +28,7 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
     dirname = '{temp_dir}'
     default_ext = ''
     variable = ''
+    csvargs = {}
 
     @classmethod
     def from_yaml(cls, loader, node):
@@ -35,16 +36,14 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
         return cls(**fields)
 
     def __init__(self, file_id='', filename='', dirname='', default_ext='',
-                 variable='', omit_ext=False, **env):
-
+                 variable='', csvargs={}, omit_ext=False, **env):
         self.file_id = file_id if file_id else self.file_id
         self.env = env
         self.filename = filename if filename else self.filename
         self.dirname = dirname if dirname else self.dirname
-        self.default_ext = (
-            default_ext if default_ext else self.default_ext)
-        self.variable = (
-            variable if variable else self.variable)
+        self.default_ext = default_ext if default_ext else self.default_ext
+        self.variable = variable if variable else self.variable
+        self.csvargs = csvargs if csvargs else self.csvargs
         self.omit_ext = omit_ext
 
         self._dataset = None
@@ -168,7 +167,7 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
                     path.path))
 
         if filetype in DataFrameDataset.filetypes:
-            dataset = DataFrameDataset(path, filetype=filetype)
+            dataset = DataFrameDataset(path, filetype=filetype, **self.csvargs)
             return dataset
 
         try:
@@ -187,15 +186,18 @@ class LocatorCollection(Locator):
 
     loc_type = 'list'
 
-    def __init__(self, file_id='', locs=[],
+    def __init__(self, locs, meta, file_id='',
                  dirname='', default_ext='', variable='', omit_ext=False):
         self.file_id = file_id
         self.locs = locs
+        self.meta = DataFrame.from_records(meta)
 
         self.dirname = dirname
         self._default_ext = default_ext
         self.variable = variable
         self.omit_ext = omit_ext
+
+        self.meta = pd.DataFrame({})
 
     @classmethod
     def from_yaml(cls, loader, node):
@@ -229,67 +231,170 @@ class LocatorCollection(Locator):
         self._default_ext = new_ext
 
 
-
-
 class MonthlyLoc(LocatorCollection):
 
     yaml_tag = '!MonthlyFile'
     loc_type = 'monthly'
 
-    def __init__(self, filename,
+    def __init__(self, months=range(1,13), filename,
                  file_id='', dirname='', default_ext='',
                  variable='', omit_ext=False, **env):
         locs = []
+        meta = []
+        i = 0
+
         if not 'month' in filename:
             filename += '.{month:02d}'
-        for month in range(1, 13):
+        for month in months:
+            meta_dict = {
+                'index': i,
+                'month': month,
+                'month_name': calendar.month_name[month],
+                'month_abbr': calendar.month_abbr[month]
+            }
             loc = Locator(
                 file_id=file_id,
                 filename=filename, dirname=dirname, default_ext=default_ext,
                 variable=variable, omit_ext=omit_ext,
-                month=month, month_name=calendar.month_name[month],
-                month_abbr=calendar.month_abbr[month])
+                **meta_dict)
+            meta.append(meta_dict)
             locs.append(loc)
+            i += 1
 
-        super(MonthlyLoc, self).__init__(file_id, locs)
+        super(MonthlyLoc, self).__init__(file_id, locs, meta)
 
-    def items(self):
-        return {}
 
-class Tile:
-
-    def __init__(self, min_lon, min_lat):
-        self.min_lon = min_lon
-        self.min_lat = min_lat
-        self.max_lon = min_lon + 1
-        self.max_lat = min_lat + 1
-        self.cardinal_lat = 'N' if min_lat >= 0 else 'S'
-        self.cardinal_lon = 'E' if min_lon >= 0 else 'W'
-        self.abs_min_lon = abs(min_lon)
-        self.abs_min_lat = abs(min_lat)
-
-class TilePath(LocatorCollection):
+class TileLoc(LocatorCollection):
 
     yaml_tag = '!Tiles'
     loc_type = 'tiles'
 
-    def __init__(self, file_id='',
-                 bbox=[], filename_fmt='', dirname='',
-                 default_ext='', default_name_fmt='',
-                 variable=''):
-        tiles = []
+    def __init__(self, bbox, filename,
+                 file_id='', dirname='', default_ext='',
+                 variable='', omit_ext=False, **env):
+        if not ('lat' in filename and 'lon' in filename):
+            filename += '.{lat}.{lon}'
+
+        locs = []
+        meta = []
+        i = 0
         for lon in range(int(bbox[0]), int(bbox[2])):
             for lat in range(int(bbox[1]), int(bbox[3])):
-                tiles += [Tile(lon, lat)]
-        filename = [filename_fmt.format(**vars(tile)) for tile in tiles]
+                meta_dict = {
+                    'index': i,
+                    'min_lon' = min_lon,
+                    'min_lat' = min_lat,
+                    'max_lon' = min_lon + 1,
+                    'max_lat' = min_lat + 1,
+                    'cardinal_lat' = 'N' if min_lat >= 0 else 'S',
+                    'cardinal_lon' = 'E' if min_lon >= 0 else 'W',
+                    'abs_min_lon' = abs(min_lon),
+                    'abs_min_lat' = abs(min_lat)
+                }
+                loc = Locator(
+                    file_id=file_id,
+                    filename=filename, dirname=dirname, default_ext=default_ext,
+                    variable=variable, omit_ext=omit_ext,
+                    **meta_dict
+                )
+                meta.append(meta_dict)
+                locs.append(loc, meta)
+                i += 1
 
-        super(TilePath, self).__init__(
+        super(TileLoc, self).__init__(file_id, locs, meta)
+
+class LayeredLoc(LocatorCollection):
+
+    yaml_tag = '!Layers'
+    loc_type = 'layers'
+
+    def __init__(self, layers, filename,
+                 file_id='', dirname='', default_ext='',
+                 variable='', omit_ext=False, **env):
+        if not 'layer' in filename:
+            filename += '.{layer_min}'
+
+        locs = []
+        meta = []
+        i = 0
+        for min, max in zip(layers[:-1], layers[1:]):
+            meta_dict = {
+                'index': i,
+                'layer_min'=min,
+                'layer_max'=max
+            }
+            loc = Locator(
                 file_id=file_id,
-                filename=filename, dirname=dirname,
-                default_ext=default_ext,
-                default_name_fmt=default_name_fmt,
-                variable=variable)
+                filename=filename, dirname=dirname, default_ext=default_ext,
+                variable=variable, omit_ext=omit_ext,
+                **meta_dict
+            )
+            meta.append(meta_dict)
+            locs.append(loc)
+            i += 1
 
-        # Filter out files that don't exist
-        self.filename = [self.filename[i] for i in range(len(self.path))
-                             if os.path.exists(self.path[i])]
+        super(LayeredLoc, self).__init__(file_id, locs, meta)
+
+
+class MultipleTypeLoc(LocatorCollection):
+
+    yaml_tag = '!MultiType'
+    loc_type = 'types'
+
+    def __init__(self, types, filename,
+                 file_id='', dirname='', default_ext='',
+                 variable='', omit_ext=False, **env):
+        if not 'type' in filename:
+            filename += '.{type}'
+
+        locs = []
+        meta = []
+        i = 0
+        for min, max in zip(layers[:-1], layers[1:]):
+            meta_dict = {
+                'index': i,
+                'type': type
+            }
+            loc = Locator(
+                file_id=file_id,
+                filename=filename, dirname=dirname, default_ext=default_ext,
+                variable=variable, omit_ext=omit_ext,
+                **meta_dict
+            )
+            meta.append(meta_dict)
+            locs.append(loc)
+            i += 1
+
+        super(LayeredLoc, self).__init__(file_id, locs, meta)
+
+
+class ComboLocatorCollection(LocatorCollection):
+
+    yaml_tag = '!Combo'
+    loc_type = 'combo'
+
+    def __init__(self, dimensions, filename,
+                 file_id='', dirname='', default_ext='',
+                 variable='', omit_ext=False, **kwargs):
+        locs = [None]
+        meta = [None]
+        while dimensions:
+            new_locs = []
+            new_meta = []
+            loc_cls = self.__children__()[dimensions.pop(0)]
+            for loc, rec in zip(locs, meta):
+                collection = loc_cls(
+                    file_id=file_id,
+                    filename=filename, dirname=dirname, default_ext=default_ext,
+                    variable=variable, omit_ext=omit_ext, **kwargs
+                )
+                new_locs.extend(collection.locs)
+                # Convert dataframe to list of tuples
+                new_meta.extend(
+                    [rec + row for i, row in collection.meta.itertuples()])
+            locs = new_locs
+            meta = new_meta
+            meta[['index']] = range(len(locs))
+            i += 1
+
+        super(LayeredLoc, self).__init__(file_id, locs, meta)

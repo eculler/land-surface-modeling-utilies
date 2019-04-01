@@ -137,10 +137,13 @@ class CaseDirStructure(yaml.YAMLObject):
 
         return self
 
-    def update_data(self, new_data):
-        self.locs.update({key: ds.loc
-                           for (key, ds) in new_data.items()})
-        self.data.update(new_data)
+    def update(self, new_data):
+        self.locs.update(new_data)
+        self.data.update({
+            key: loc.dataset
+            for (key, loc) in self.locs.items()
+            if loc.isfile
+        })
         return self.data
 
     @classmethod

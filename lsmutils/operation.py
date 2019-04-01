@@ -59,9 +59,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     end_msg = '{title} saved at {path}'
     error_msg = '{title} calculation FAILED'
 
-    def __init__(self, inpt, out):
+    def __init__(self, inpt, out, dims={}):
         self.inpt = inpt
         self.out = out
+        self.dims = dims
 
     @classmethod
     def from_yaml(cls, loader, node):
@@ -102,11 +103,22 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             for ot in self.output_types}
 
         logging.debug('Resolving %s locs', self.name)
-        self.locs = {
-            ot.key: Locator.__children__()[ot.loctype](
+        if not self.dims:
+            self.locs = {
+                ot.key: Locator.__children__()[ot.loctype](
+                        filename=self.filenames[ot.key],
+                        default_ext=ot.filetype).configure(run_config)
+                for ot in self.output_types}
+        else:
+            self.locs{
+                ot.key: ComboLocatorCollection(
+                    self.dims.values(),
                     filename=self.filenames[ot.key],
-                    default_ext=ot.filetype).configure(run_config)
-            for ot in self.output_types}
+                    default_ext=ot.filetype,
+                    ).configure(run_config)
+                for ot in self.output_types
+                )
+            }
 
         # File paths under the local key, not the parent key
         alt_locs = {}
@@ -177,41 +189,23 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         raise NotImplementedError
 
     def save(self):
-        """A convenience function to save as default format"""
-        return self.saveas()
 
-    def saveas(self, filetypes={}, datatypes={}):
         logging.info(self.start_msg.format(title=self.title))
         for key, value in self.kwargs.items():
             if hasattr(value, 'loc'):
                 value = value.loc.path
             logging.info('    %s <- %s', key, value)
 
-        # Change path extensions to match working extension
-        for key, filetype in filetypes.items():
-            self.locs[key].default_ext = filetype
-
         # Perform raster operation
-        self.datasets = self.run(**self.kwargs)
-
-        # Convert to desired file format
-        for key in set(list(filetypes.keys()) + list(datatypes.keys())):
-            if key in datatypes:
-                datatype = datatypes[key]
-            if key in filetypes:
-                filetype = filetypes[key]
-            self.datasets[key].saveas(filetype, datatype=datatype)
+        for key, dim_list in dims:
+            
+            self.run(**self.kwargs)
 
         # Report status
-        if self.datasets:
-            for key, loc in self.locs.items():
-                logging.info(
-                        self.end_msg.format(title=self.title,
-                                            path=loc.path))
-        else:
-            logging.error(self.error_msg.format(title=self.title))
+        for key, loc in self.locs.items():
+            logging.info(self.end_msg.format(title=self.title, path=loc.path))
 
-        return self.datasets
+        return self.locs
 
 class MergeOp(Operation):
 
@@ -224,7 +218,7 @@ class MergeOp(Operation):
             'gdal_merge.py', '-o',
             self.locs['merged'].path] +
             [ds.loc.path for ds in raster_list])
-        return {'merged': GDALDataset(self.locs['merged'])}
+
 
 class MatchRasterOp(Operation):
 
@@ -245,7 +239,6 @@ class MatchRasterOp(Operation):
             input_ds.dataset,
             options=agg_warp_options)
 
-        return {'matched': GDALDataset(self.locs['matched'])}
 
 class GridAlignOp(Operation):
 
@@ -283,7 +276,6 @@ class GridAlignOp(Operation):
             input_ds.dataset,
             options=agg_warp_options)
 
-        return {'aligned': GDALDataset(self.locs['aligned'])}
 
 class CropOp(Operation):
 
@@ -321,7 +313,6 @@ class CropOp(Operation):
             input_ds.dataset,
             options=agg_warp_options)
 
-        return {'cropped': GDALDataset(self.locs['cropped'])}
 
 class ClipOp(Operation):
 
@@ -338,7 +329,7 @@ class ClipOp(Operation):
             resampleAlg=algorithm
         )
         gdal.Warp(path, input_ds.dataset, options=clip_warp_options)
-        return GDALDataset(self.path)
+
 
 class ReprojectRasterOp(Operation):
 
@@ -356,7 +347,7 @@ class ReprojectRasterOp(Operation):
             self.locs['reprojected'].path,
             input_ds.dataset,
             options=agg_warp_options)
-        return {'reprojected': GDALDataset(self.locs['reprojected'])}
+
 
 class ReprojectVectorOp(Operation):
 
@@ -413,8 +404,6 @@ class ReprojectVectorOp(Operation):
         del input_ds.dataset
         del reproj_ds.dataset
 
-        reproj_ds = BoundaryDataset(self.locs['reprojected'])
-        return {'reprojected': reproj_ds}
 
 class SumOp(Operation):
 
@@ -441,7 +430,6 @@ class SumOp(Operation):
         with open(self.path.csv, 'a') as csv_file:
             writer = csv.writer(csv_file)
             writer.writerow([label, sum])
-        return sum
 
 
 class MaskOp(Operation):
@@ -462,7 +450,7 @@ class MaskOp(Operation):
                 ['ALL_TOUCHED=TRUE'],
         )
         output_ds.nodata = -9999
-        return output_ds
+
 
 class UniqueOp(Operation):
 
@@ -478,7 +466,7 @@ class UniqueOp(Operation):
                 1,
                 unique_ds.array.size + 1
         ).reshape(unique_ds.array.shape)
-        return unique_ds
+
 
 class ZonesOp(Operation):
 
@@ -494,7 +482,7 @@ class ZonesOp(Operation):
                 outputBounds = fine_ds.rev_warp_output_bounds,
                 resampleAlg='average')
         gdal.Warp(path, unique_ds.dataset, options=res_warp_options)
-        return GDALDataset(self.path)
+
 
 class FractionOp(Operation):
 
@@ -519,7 +507,7 @@ class FractionOp(Operation):
         fraction_np[fraction_np==0] = unique_ds.nodata
         fraction_ds = GDALDataset(self.path, template=unique_ds)
         fraction_ds.array = fraction_np
-        return fraction_ds
+
 
 class GridAreaOp(Operation):
 
@@ -533,7 +521,7 @@ class GridAreaOp(Operation):
         subprocess.call(['cdo', 'gridarea',
                          fraction_ds.loc.nc,
                          self.path.nc])
-        return GDALDataset(self.path, filetype='nc')
+
 
 class ClipToCoarseOp(Operation):
 
@@ -567,7 +555,6 @@ class ClipToCoarseOp(Operation):
                 dstNodata=-9999)
         gdal.Warp(self.path.gtif, fine_ds.dataset, options=warp_options)
 
-        return GDALDataset(self.path)
 
 class RemoveSinksOp(Operation):
 
@@ -580,8 +567,7 @@ class RemoveSinksOp(Operation):
         subprocess.call(['pitremove',
                          '-z', input_ds.loc.path,
                          '-fel', self.locs['no-sinks'].no_ext])
-        no_sinks_ds = GDALDataset(self.locs['no-sinks'])
-        return {'no-sinks': no_sinks_ds}
+
 
 class FlowDirectionOp(Operation):
 
@@ -599,8 +585,7 @@ class FlowDirectionOp(Operation):
             '-p', self.locs['flow-direction'].path,
             '-sd8', self.locs['slope'].path
         ])
-        flow_dir_ds = GDALDataset(self.locs['flow-direction'])
-        return {'flow-direction': flow_dir_ds}
+
 
 class FlowDistanceOp(Operation):
 
@@ -643,8 +628,6 @@ class FlowDistanceOp(Operation):
         distance = distance.astype(np.float32)
         flow_dist_ds.array = distance
 
-        return {'flow-distance': flow_dist_ds}
-
 
 class FlowDistanceHaversineOp(FlowDistanceOp):
 
@@ -670,6 +653,7 @@ class FlowDistanceEuclideanOp(FlowDistanceOp):
     def distance(self, lon1, lat1, lon2, lat2):
         return np.sqrt((lon2 - lon1)**2 + (lat2 - lat1)**2)
 
+
 class SourceAreaOp(Operation):
 
     title = 'Source Area/Flow Accumulation'
@@ -685,7 +669,6 @@ class SourceAreaOp(Operation):
         ])
         source_area_ds = GDALDataset(self.locs['source-area'])
         source_area_ds.nodata = 0
-        return {'source-area': source_area_ds}
 
 
 class StreamDefinitionByThresholdOp(Operation):
@@ -701,9 +684,6 @@ class StreamDefinitionByThresholdOp(Operation):
                          '-ssa', source_area_ds.loc.path,
                          '-thresh', '{:.1f}'.format(threshold),
                          '-src', self.locs['stream-raster'].no_ext])
-        stream_raster_ds = GDALDataset(
-                self.locs['stream-raster'], filetype='tif')
-        return {'stream-raster': stream_raster_ds}
 
 
 class MoveOutletsToStreamOp(Operation):
@@ -744,8 +724,6 @@ class MoveOutletsToStreamOp(Operation):
         # Clean up
         out_ds.dataset.Destroy()
         in_ds.dataset.Destroy()
-        out_ds = BoundaryDataset(self.locs['outlet-on-stream'])
-        return {'outlet-on-stream': out_ds}
 
 
 class LabelGagesOp(Operation):
@@ -780,9 +758,6 @@ class LabelGagesOp(Operation):
                 a_file,
                 self.locs['labelled-outlet'].ext(
                     os.path.splitext(a_file)[1][1:]))
-        outlet_ds = BoundaryDataset(self.locs['labelled-outlet'])
-
-        return {'labelled-outlet': outlet_ds}
 
 
 class GageWatershedOp(Operation):
@@ -801,8 +776,6 @@ class GageWatershedOp(Operation):
                          '-p', flow_dir_ds.loc.path,
                          '-o', outlet_ds.loc.path,
                          '-gw', self.locs['gage-watershed'].path])
-        gage_watershed_ds = GDALDataset(self.locs['gage-watershed'])
-        return {'gage-watershed': gage_watershed_ds}
 
 
 class PeukerDouglasStreamDefinitionOp(Operation):
@@ -852,14 +825,7 @@ class PeukerDouglasStreamDefinitionOp(Operation):
                          '-thresh', threshold,
                          '-src', self.locs['stream-definition'].path])
 
-        ssa_ds = GDALDataset(self.locs['ssa'])
-        stream_definition_ds = GDALDataset(
-                self.locs['stream-definition'])
-        return {
-            'ssa': ssa_ds,
-            'drop-analysis': None,
-            'stream-definition': stream_definition_ds
-        }
+
 
 
 class DinfFlowDirOp(Operation):
@@ -877,9 +843,7 @@ class DinfFlowDirOp(Operation):
                          '-fel', elevation_ds.loc.path,
                          '-slp', self.locs['slope'].path,
                          '-ang', self.locs['aspect'].path])
-        slope_ds = GDALDataset(self.locs['slope'])
-        aspect_ds = GDALDataset(self.locs['aspect'])
-        return {'slope': slope_ds, 'aspect': aspect_ds}
+
 
 class Slope(Operation):
     """
@@ -912,7 +876,6 @@ class Slope(Operation):
 
         slope_ds = GDALDataset(self.locs['slope'], template=elevation_ds)
         slope_ds.array = slope
-        return {'slope': slope_ds}
 
 
 class SoilDepthOp(Operation):
@@ -952,7 +915,6 @@ class SoilDepthOp(Operation):
         soil_depth_ds = GDALDataset(
                 self.locs['soil-depth'], template=elev_ds)
         soil_depth_ds.array = soil_depth_arr
-        return {'soil-depth': soil_depth_ds}
 
 
 class StreamNetworkOp(Operation):
@@ -1002,20 +964,10 @@ class StreamNetworkOp(Operation):
             '-coord', self.locs['coord'].path,
             '-net', self.locs['network'].path,
             '-w', self.locs['watershed'].path])
-
-        tree_ds = DataFrameDataset(
-                self.locs['tree'], delimiter='\t',
-                header=None, names=self.tree_colnames)
-        coord_ds = DataFrameDataset(
-                self.locs['coord'], delimiter='\t',
-                header=None, names=self.coord_colnames)
-        return {
-            'order': GDALDataset(self.locs['order']),
-            'tree': tree_ds,
-            'coord': coord_ds,
-            'network': BoundaryDataset(self.locs['network']),
-            'watershed': GDALDataset(self.locs['watershed'])
-        }
+        self.locs['tree'].csvargs.update({
+            'delimiter': '\t', 'header': None, 'names': self.tree_colnames})
+        self.locs['coord'].csvargs.update({
+            'delimiter': '\t', 'header': None, 'names': self.coord_colnames})
 
 
 class DHSVMNetworkOp(Operation):
@@ -1177,12 +1129,15 @@ class DHSVMNetworkOp(Operation):
             'header': False,
             'index': False
         }
-        net_df = net_df[::-1]
-        net_df[self.net_colnames].to_csv(
-                self.locs['network'].path, **csvargs)
 
+        self.locs['network'].csvargs = csvargs
+        net_df = net_df[::-1]
+        net_df[self.net_colnames].to_csv(self.locs['network'].path, **csvargs)
+
+        self.locs['map'].csvargs = csvargs
         map_df[self.map_colnames].to_csv(self.locs['map'].path, **csvargs)
 
+        self.locs['state'].csvargs = csvargs
         net_df.sort_values(['order'])[self.state_colnames].to_csv(
                 self.locs['state'].path, **csvargs)
 
@@ -1192,16 +1147,8 @@ class DHSVMNetworkOp(Operation):
             'header': False,
             'index': True
         }
+        self.locs['class'].csvargs = class_csvargs
         self.class_properties.to_csv(self.locs['class'].path, **class_csvargs)
-
-        return {
-            'network': DataFrameDataset(
-                    self.locs['network'], **csvargs),
-            'map': DataFrameDataset(self.locs['map'], **csvargs),
-            'state': DataFrameDataset(self.locs['state'], **csvargs),
-            'class': DataFrameDataset(
-                self.locs['class'], **class_csvargs)
-        }
 
 
 class RasterToShapefileOp(Operation):
@@ -1234,8 +1181,6 @@ class RasterToShapefileOp(Operation):
                         output_layer, -1, [], callback=None)
         output_ds = None
 
-        output_ds = BoundaryDataset(self.path)
-        return output_ds
 
 class LatLonToShapefileOp(Operation):
     """ Create a shapefile with a single point """
@@ -1266,8 +1211,6 @@ class LatLonToShapefileOp(Operation):
 
         # Clean up'
         shp_ds.dataset.Destroy()
-        shp_ds = BoundaryDataset(self.locs['shapefile'])
-        return {'shapefile': shp_ds}
 
 
 class UpscaleFlowDirectionOp(Operation):
@@ -1318,8 +1261,6 @@ class UpscaleFlowDirectionOp(Operation):
         flow_dir_ds.nodata = -9999
         flow_dir_ds.array = flow_dir_array
 
-        return {'flow-direction': flow_dir_ds}
-
 
 class ConvertOp(Operation):
 
@@ -1337,7 +1278,7 @@ class ConvertOp(Operation):
 
         converted = convert_array(input_array)
         converted_ds.array = converted.filled()
-        return {'flow-direction': converted_ds}
+
 
 class NorthCWToEastCCWOp(ConvertOp):
 
@@ -1376,7 +1317,7 @@ class BasinIDOp(Operation):
         # Compute basin ID array
         basin_id_ds.array[np.where(basin_id_ds.array==1)] = 1
         basin_id_ds.array[np.where(basin_id_ds.array!=1)] = basin_id_ds.nodata
-        return basin_id_ds
+
 
 class MeltNetCDF(Operation):
     '''
@@ -1402,7 +1343,6 @@ class MeltNetCDF(Operation):
             for i in range(lats_flat):
                 writer.write([lats_flat[i], lons_flat[i], data_flat[i]])
 
-        return True
 
 class Melt(Operation):
     '''
@@ -1425,7 +1365,7 @@ class Melt(Operation):
             for row in zip(lats_flat, lons_flat, data_flat):
                 if not np.isnan(row[2]):
                     writer.writerow(row)
-        return True
+
 
 class NLCDtoDHSVM(Operation):
     """
@@ -1466,7 +1406,7 @@ class NLCDtoDHSVM(Operation):
         for nlcd, dhsvm in self.remap_table.items():
             array[nlcd_ds.array==nlcd] = dhsvm
         veg_type_ds.array = array
-        return {'veg-type': veg_type_ds}
+
 
 class ShadingOp(Operation):
     """ Compute shadow and skyview files from a DEM """
@@ -1475,7 +1415,7 @@ class ShadingOp(Operation):
     name = 'shading'
     output_types = [
         OutputType('skyview', 'nc'),
-        OutputType('shading-hourly', 'nc', 'monthly'),
+        OutputType('shadow-hourly', 'nc', 'monthly'),
         OutputType('shadow', 'nc', 'monthly')
     ]
 
@@ -1506,7 +1446,6 @@ class ShadingOp(Operation):
         steps_per_day = str(int(24 / dt))
         dt = str(dt)
 
-        '''
         skyview_args = [
             self.scripts['skyview'],
             elevation_ds.loc.path, self.locs['skyview'].path,
@@ -1519,11 +1458,10 @@ class ShadingOp(Operation):
             stderr=subprocess.STDOUT)
         skyview_output, _ = skyview_process.communicate()
         logging.info(skyview_output)
-        '''
 
         # Shadow
         month = 1
-        for loc in self.locs['shading-hourly'].locs:
+        for loc in self.locs['shadow-hourly'].locs:
             shading_args = [
                 self.scripts['shading'],
                 elevation_ds.loc.path, loc.path,
@@ -1555,16 +1493,89 @@ class ShadingOp(Operation):
             logging.info(average_output)
             month += 1
 
-        return {
-            'skyview': GDALDataset(self.locs['skyview']),
-            'shading': self.locs['shading'].dataset,
-            'shadow': self.locs['shadow'].dataset
-        }
+
+class AverageLayers(Operation):
+    """ Weighted average of layers by depth """
+
+    title = "Average Layers"
+    name = 'average layers'
+    output_types = [OutputType('average', 'gtif')]
+
+    def run(self, layered_ds, bounds):
+        diff = bounds[1:] - bounds[:-1]
+        weights = diff / sum(diff)
+
+        average = 0 * np.ones(layered_ds.layer[0].array.shape)
+        for layer, weight in zip(layered_ds.layers, weights):
+            average += layer * weight
+
+        average_ds = GDALDataset(
+            self.locs['average'], template=layered_ds.layers[0])
+        average_ds.array = average
+
+
+class SoilTexture(Operation):
+    """ Soil texture category from percent clay/sand/slit """
+
+    title = "Soil Texture"
+    name = 'soil-texture'
+    output_types = [OutputType('texture', 'gtif')]
+
+    textures = {
+        'Sand': 1,
+        'Loamy sand': 2,
+        'Sandy loam': 3,
+        'Silty loam': 4,
+        'Silt': 5,
+        'Loam': 6,
+        'Sandy clay loam': 7,
+        'Silty clay loam': 8,
+        'Clay loam': 9,
+        'Sandy clay': 10,
+        'Silty clay': 11,
+        'Clay': 12,
+        'Loamy sand': 13,
+    }
+
+    def run(self, clay_ds, sand_ds, silt_ds):
+        clay = clay_ds.array
+        sand = sand_ds.array
+        silt = silt_ds.array
+        t = 0 * ones(clay.shape)
+
+        t.where((clay > 40) & (silt > 40),
+                self.textures['Silty clay'], t)
+        t.where((t==0) & (clay > 40) & (sand < 56),
+                self.textures['Clay'], t)
+        t.where((t==0) & (clay > 28) & (sand < 20),
+                self.textures['Silty clay loam'], t)
+        t.where((t==0) & (clay > 28) & (sand < 44),
+                self.textures['Silty clay loam'], t)
+        t.where((t==0) & (clay > 36),
+                self.textures['Sandy clay'], t)
+        t.where((t==0) & (clay > 20) & (silt < 28),
+                self.textures['Sandy clay'], t)
+        t.where((t==0) & (clay < 12) & (silt > 80),
+                self.textures['Silt'], t)
+        t.where((t==0) & (silt > 50),
+                self.textures['Silty loam'], t)
+        t.where((t==0) & (clay > 8) & (sand < 52),
+                self.textures['Loam'], t)
+        t.where((t==0) & (sand - clay < 70),
+                self.textures['Sandy loam'], t)
+        t.where((t==0) & (sand - clay / 4. < 87.5),
+                self.textures['Loamy sand'], t)
+        t.where(t==0, self.textures['Sand'], t)
+
+        texture_ds = GDALDataset(self.locs['texture'], template=clay_ds)
+        texture_ds.array = t
+
 
 class WriteOneVarNetCDFOp(Operation):
     """ Write datasets to a netcdf file """
 
     title = 'Write NetCDF'
+    name = NotImplemented
     output_types = [OutputType('netcdf', 'nc')]
     dtype = NotImplemented
     units = NotImplemented
@@ -1611,7 +1622,7 @@ class WriteOneVarNetCDFOp(Operation):
         ncfile.close()
 
         self.locs['netcdf'].netcdf_variable = self.varname
-        return {'netcdf': GDALDataset(self.locs['netcdf'])}
+
 
 class DEMForDHSVM(WriteOneVarNetCDFOp):
 

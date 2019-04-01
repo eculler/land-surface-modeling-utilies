@@ -126,34 +126,34 @@ class OperationSequence(yaml.YAMLObject):
 
             if case.dir_structure.output_files:
                 logging.debug('Output files located at:')
-            for key, ds in case.dir_structure.output_files.items():
-                if hasattr(ds, 'loc'):
-                    logging.debug('    %s <- %s', key, ds.loc.path)
+            for key, loc in case.dir_structure.output_files.items():
+                if hasattr(ds, 'path'):
+                    logging.debug('    %s <- %s', key, loc.path)
 
             # Run operation
-            output_data = op.configure(
+            output_locs = op.configure(
                     case.cfg,
                     locs=case.dir_structure.output_files,
                     scripts=case.dir_structure.scripts,
                     **inpt_data).save()
 
             logging.debug('Output files saved to:')
-            for key, ds in output_data.items():
-                if hasattr(ds, 'loc'):
-                    logging.debug('    %s <- %s', key, ds.loc.path)
+            for key, loc in output_locs.items():
+                if hasattr(loc, 'path'):
+                    logging.debug('    %s <- %s', key, loc.path)
 
-            new_data = {
-                out_key: output_data[op_key]
+            new_locs = {
+                out_key: output_locs[op_key]
                 for op_key, out_key in op.out.items()
-                if op_key in output_data
+                if op_key in output_locs
             }
 
             logging.debug('Files added to case:')
-            for key, ds in new_data.items():
+            for key, ds in new_locs.items():
                 if hasattr(ds, 'loc'):
                     logging.debug('    %s <- %s', key, ds.loc.path)
 
-            case.dir_structure.update_data(new_data)
+            case.dir_structure.update(new_locs)
 
         return case
 
