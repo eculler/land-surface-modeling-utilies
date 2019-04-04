@@ -1,3 +1,4 @@
+import logging
 from osgeo import gdal, gdal_array, ogr, osr
 import numpy as np
 import pandas as pd
@@ -10,6 +11,7 @@ class Dataset(object):
 
     def __init__(self, loc):
         self.loc = loc
+        self.meta = {}
 
 class DataFrameDataset(Dataset):
 
@@ -22,6 +24,7 @@ class DataFrameDataset(Dataset):
         self.loc = loc
         self.filetype = filetype
         self.csvargs = kwargs
+        self.meta = {}
         self._dataset = None
 
     @property
@@ -44,6 +47,8 @@ class SpatialDataset():
         if not padding is None:
             ds_min = ds_min - padding
             ds_max = ds_max + padding
+
+        self.meta = {}
 
         self._min = ds_min
         self._max = ds_max
@@ -114,12 +119,14 @@ class GDALDataset(SpatialDataset):
         'nc': 'netCDF',
         'asc': 'AAIGrid',
         'gtif': 'GTiff',
-        'tif': 'GTiff'
+        'tif': 'GTiff',
+        'hgt': 'SRTMHGT'
     }
 
     def __init__(self, loc, template=None, filetype='gtif'):
         self.loc = loc
         self.filetype = filetype
+        self.meta = {}
 
         # Initialize internal attributes
         self._dataset = None
@@ -436,6 +443,7 @@ class BoundaryDataset(SpatialDataset):
         self.loc = loc
         self.update = update
         self.driver = driver
+        self.meta = {}
         self._dataset = None
         self._layers = None
         self._min = None

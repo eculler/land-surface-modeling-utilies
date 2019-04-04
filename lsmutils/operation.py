@@ -20,7 +20,7 @@ import subprocess
 import yaml
 import collections
 
-from .loc import Locator
+from .loc import *
 from .dataset import GDALDataset, BoundaryDataset, DataFrameDataset
 from .utils import CoordProperty, BBox
 
@@ -55,7 +55,6 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     output_types = NotImplemented
     filename_format = '{output_label}'
 
-    start_msg = 'Calculating {title} with data:'
     end_msg = '{title} saved at {path}'
     error_msg = '{title} calculation FAILED'
 
@@ -71,7 +70,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         child_cls = cls.__children__()[fields.pop('name')]
         return child_cls(**fields)
 
-    def configure(self, run_config, locs={}, scripts={}, **kwargs):
+    def configure(self, cfg, locs={}, scripts={}, **kwargs):
         logging.debug('Configuring %s operation', self.name)
 
         self._resolution = None
@@ -80,10 +79,11 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         # Extract configuration variables
         self.kwargs = {
             key.replace('-', '_'): value for key, value in kwargs.items()}
-        self.run_config = run_config
-        self.log_level = run_config['log_level']
-        self.case_id = run_config['case_id']
-        self.base_dir = run_config['base_dir']
+        print(self.kwargs)
+        self.cfg = cfg
+        self.log_level = cfg['log_level']
+        self.case_id = cfg['case_id']
+        self.base_dir = cfg['base_dir']
 
         self.scripts = scripts
 
@@ -107,19 +107,22 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             self.locs = {
                 ot.key: Locator.__children__()[ot.loctype](
                         filename=self.filenames[ot.key],
-                        default_ext=ot.filetype).configure(run_config)
+                        default_ext=ot.filetype).configure(cfg)
                 for ot in self.output_types}
         else:
-            self.locs{
+            env = {}
+            for loc in self.kwargs.values():
+                if hasattr(loc, 'env'):
+                    env.update(loc.env)
+            self.locs = {
                 ot.key: ComboLocatorCollection(
-                    self.dims.values(),
-                    filename=self.filenames[ot.key],
+                    self.filenames[ot.key],
+                    self.dims.copy(),
                     default_ext=ot.filetype,
-                    ).configure(run_config)
+                    **env
+                    ).configure(cfg)
                 for ot in self.output_types
-                )
             }
-
         # File paths under the local key, not the parent key
         alt_locs = {}
         for key, label in self.out.items():
@@ -152,8 +155,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         for pykey, dsname in self.inpt.items():
             if dsname in new_labels:
                 self.inpt[pykey] = new_labels[dsname]
+                if dsname in self.dims:
+                    self.dims[new_labels[dsname]] = self.dims.pop(dsname)
                 logging.debug(
-                        'Relabelled %s to %s', dsname, self.inpt[pykey])
+                    'Relabelled %s to %s', dsname, self.inpt[pykey])
         for pykey, dsname in self.out.items():
             if dsname in new_labels:
                 self.out[pykey] = new_labels[dsname]
@@ -189,17 +194,53 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         raise NotImplementedError
 
     def save(self):
-
-        logging.info(self.start_msg.format(title=self.title))
+        logging.info('Calculating %s with data:', self.title)
         for key, value in self.kwargs.items():
             if hasattr(value, 'loc'):
-                value = value.loc.path
-            logging.info('    %s <- %s', key, value)
+                if hasattr(value.loc, 'locs'):
+                    for loc in value.locs:
+                        logging.info('        %s\n', loc.path)
+                elif hasattr(value.loc, 'path'):
+                    logging.info('    %s <- %s\n', key, value.loc.path)
+            else:
+                logging.info('    %s <- %s\n', key, value)
 
         # Perform raster operation
-        for key, dim_list in dims:
-            
-            self.run(**self.kwargs)
+        if self.dims:
+            # This is sloppy
+            # it relies on only a single locator collection
+            locs = copy.copy(self.locs)
+
+            # Get parameter combinations from locator collections
+            for key, loc in self.kwargs.items():
+                if hasattr(loc, 'cols'):
+                    dim_values = self.kwargs[key].get_dim_values(self.dims)
+            # Run operation for each combination
+            i = 0
+            for row in dim_values.to_dict('records'):
+                kwargs = copy.copy(self.kwargs)
+                for key, loc in kwargs.items():
+                    if hasattr(loc, 'file_id'):
+                        ds_name = loc.file_id
+                        if ds_name in row:
+                            kwargs[key] = loc.get_subset(row[ds_name])
+
+                for key, loc in self.locs.items():
+                    if hasattr(loc, 'locs'):
+                        self.locs[key] = loc.get_subset([i])
+                kwargs.update({
+                    key: loc.dataset for key, loc in kwargs.items()
+                    if hasattr(loc, 'dataset')})
+
+                self.run(**kwargs)
+                self.locs = copy.copy(locs)
+                i += 1
+        else:
+            kwargs = copy.copy(self.kwargs)
+            kwargs.update({
+                key: loc.dataset for key, loc in kwargs.items()
+                if hasattr(loc, 'dataset')})
+            self.run(**kwargs)
 
         # Report status
         for key, loc in self.locs.items():
@@ -359,6 +400,8 @@ class ReprojectVectorOp(Operation):
         reproj_ds = BoundaryDataset(
                 self.locs['reprojected'], update=True).new()
 
+        print(input_ds)
+        print(input_ds.loc.path)
         for layer in input_ds.layers:
             # SRS transform
             in_srs = layer.GetSpatialRef()
@@ -533,7 +576,7 @@ class ClipToCoarseOp(Operation):
         input_srs = osr.SpatialReference(wkt=coarse_mask_ds.projection)
 
         # Shapefile for output (in same projection)
-        shp_path = TempLocator('coarse_mask_outline', **self.run_config)
+        shp_path = TempLocator('coarse_mask_outline', **self.cfg)
         shp_driver = ogr.GetDriverByName("ESRI Shapefile")
         outline_ds = shp_driver.CreateDataSource(shp_path.shp)
         layer = 'mask_outline'
@@ -1210,7 +1253,7 @@ class LatLonToShapefileOp(Operation):
         output_layer.CreateFeature(output_feature)
 
         # Clean up'
-        shp_ds.dataset.Destroy()
+        del shp_ds.dataset
 
 
 class UpscaleFlowDirectionOp(Operation):
@@ -1225,10 +1268,10 @@ class UpscaleFlowDirectionOp(Operation):
 
     def run(self, flow_acc_ds, template_ds):
         flowgen_path = ScriptLocator('flowgen', filename='flowgen').configure(
-                                  self.run_config)
+                                  self.cfg)
         flow_acc_path = Locator(
                 filename=flow_acc_ds.loc.filename + '_nohead').configure(
-                        self.run_config)
+                        self.cfg)
         flow_acc_ds_long = flow_acc_ds.array.astype(np.int_)
 
         # Flowgen seems to require an upside down array ??
@@ -1498,28 +1541,29 @@ class AverageLayers(Operation):
     """ Weighted average of layers by depth """
 
     title = "Average Layers"
-    name = 'average layers'
+    name = 'average-layers'
     output_types = [OutputType('average', 'gtif')]
 
-    def run(self, layered_ds, bounds):
-        diff = bounds[1:] - bounds[:-1]
-        weights = diff / sum(diff)
+    def run(self, layered_ds):
+        diff = []
+        for layer in layered_ds:
+            diff.append(layer.meta['layer_max'] - layer.meta['layer_min'])
+        weights = [d / sum(diff) for d in diff]
 
-        average = 0 * np.ones(layered_ds.layer[0].array.shape)
-        for layer, weight in zip(layered_ds.layers, weights):
-            average += layer * weight
+        average = 0 * np.ones(layered_ds[0].array.shape)
+        for loc, ds, weight in zip(
+                self.locs['average'].locs, layered_ds, weights):
+            average += ds.array * weight
+            average_ds = GDALDataset(loc, template=layered_ds[0])
+            average_ds.array = average
 
-        average_ds = GDALDataset(
-            self.locs['average'], template=layered_ds.layers[0])
-        average_ds.array = average
 
-
-class SoilTexture(Operation):
+class SoilType(Operation):
     """ Soil texture category from percent clay/sand/slit """
 
-    title = "Soil Texture"
-    name = 'soil-texture'
-    output_types = [OutputType('texture', 'gtif')]
+    title = "Soil Type"
+    name = 'soil-type'
+    output_types = [OutputType('type', 'gtif')]
 
     textures = {
         'Sand': 1,
@@ -1537,37 +1581,41 @@ class SoilTexture(Operation):
         'Loamy sand': 13,
     }
 
-    def run(self, clay_ds, sand_ds, silt_ds):
-        clay = clay_ds.array
-        sand = sand_ds.array
-        silt = silt_ds.array
-        t = 0 * ones(clay.shape)
+    def run(self, texture_ds):
+        types = {ds.meta['type']: ds for ds in texture_ds}
+        clay = types['clay'].array
+        sand = types['sand'].array
+        silt = types['silt'].array
+        t = 0 * np.ones(clay.shape)
 
-        t.where((clay > 40) & (silt > 40),
-                self.textures['Silty clay'], t)
-        t.where((t==0) & (clay > 40) & (sand < 56),
+        t = np.where(
+            (clay > 40) & (silt > 40), self.textures['Silty clay'], t)
+        t = np.where(
+            (t==0) & (clay > 40) & (sand < 56),
                 self.textures['Clay'], t)
-        t.where((t==0) & (clay > 28) & (sand < 20),
-                self.textures['Silty clay loam'], t)
-        t.where((t==0) & (clay > 28) & (sand < 44),
-                self.textures['Silty clay loam'], t)
-        t.where((t==0) & (clay > 36),
-                self.textures['Sandy clay'], t)
-        t.where((t==0) & (clay > 20) & (silt < 28),
-                self.textures['Sandy clay'], t)
-        t.where((t==0) & (clay < 12) & (silt > 80),
-                self.textures['Silt'], t)
-        t.where((t==0) & (silt > 50),
-                self.textures['Silty loam'], t)
-        t.where((t==0) & (clay > 8) & (sand < 52),
-                self.textures['Loam'], t)
-        t.where((t==0) & (sand - clay < 70),
-                self.textures['Sandy loam'], t)
-        t.where((t==0) & (sand - clay / 4. < 87.5),
-                self.textures['Loamy sand'], t)
-        t.where(t==0, self.textures['Sand'], t)
+        t = np.where(
+            (t==0) & (clay > 28) & (sand < 20),
+            self.textures['Silty clay loam'], t)
+        t = np.where(
+            (t==0) & (clay > 28) & (sand < 44),
+            self.textures['Silty clay loam'], t)
+        t = np.where(
+            (t==0) & (clay > 36), self.textures['Sandy clay'], t)
+        t = np.where(
+            (t==0) & (clay > 20) & (silt < 28), self.textures['Sandy clay'], t)
+        t = np.where(
+            (t==0) & (clay < 12) & (silt > 80), self.textures['Silt'], t)
+        t = np.where(
+            (t==0) & (silt > 50), self.textures['Silty loam'], t)
+        t = np.where(
+            (t==0) & (clay > 8) & (sand < 52), self.textures['Loam'], t)
+        t = np.where(
+            (t==0) & (sand - clay < 70), self.textures['Sandy loam'], t)
+        t = np.where(
+            (t==0) & (sand - clay / 4. < 87.5), self.textures['Loamy sand'], t)
+        t = np.where(t==0, self.textures['Sand'], t)
 
-        texture_ds = GDALDataset(self.locs['texture'], template=clay_ds)
+        texture_ds = GDALDataset(self.locs['type'], template=types['clay'])
         texture_ds.array = t
 
 

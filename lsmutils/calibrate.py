@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 import logging
 import uuid
@@ -13,7 +14,6 @@ class Case:
     def __init__(self, cfg, dir_structure):
         self.cfg = cfg
         self.dir_structure = dir_structure
-        self.dir_structure.new_case()
 
     @property
     def input(self):
@@ -99,17 +99,23 @@ class CaseDirStructure(yaml.YAMLObject):
             layer = next_layer
 
     def configure(self, cfg):
+        env = copy.copy(cfg)
+        env.pop('in')
+        env.pop('scripts')
+        env.pop('cases')
+        env.pop('operations')
+        env.pop('structure')
         # Configure locators
         # Add output files
         self.output_files = {
             key: self.path_info[key].configure(
-                cfg, file_id=key, dirname=os.path.join(*loc))
+                env, file_id=key, dirname=os.path.join(*loc))
             for key, loc in self.output_files.items()
         }
         self.locs.update(self.output_files)
         # Add input files
         self.locs.update({
-            key: path.configure(cfg, file_id=key)
+            key: path.configure(env, file_id=key)
             for key, path in cfg['in'].items()
             if hasattr(path, 'file_id')
         })
@@ -119,7 +125,7 @@ class CaseDirStructure(yaml.YAMLObject):
         self.data.update(cfg['in'])
         # Add existing datasets
         self.data.update({
-            key: loc.dataset
+            key: loc
             for (key, loc) in self.locs.items()
             if loc.isfile
         })
@@ -140,7 +146,7 @@ class CaseDirStructure(yaml.YAMLObject):
     def update(self, new_data):
         self.locs.update(new_data)
         self.data.update({
-            key: loc.dataset
+            key: loc
             for (key, loc) in self.locs.items()
             if loc.isfile
         })
@@ -150,9 +156,3 @@ class CaseDirStructure(yaml.YAMLObject):
     def from_yaml(cls, loader, node):
         fields = loader.construct_mapping(node, deep=True)
         return cls(**fields)
-
-    def new_case(self):
-        for path in self.locs.values():
-            if not os.path.exists(path.dirname):
-                os.makedirs(path.dirname)
-        return self

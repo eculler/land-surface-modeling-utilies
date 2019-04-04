@@ -56,16 +56,19 @@ class OperationSequence(yaml.YAMLObject):
             seq_path = '/'.join(['sequences', seq_name])
             seq_def = pkg_resources.resource_string(__name__, seq_path)
             seq = yaml.load(seq_def)
-            seq.configure(fields['in'], fields['out'])
+            dims = fields['dims'] if 'dims' in fields else {}
+            seq.configure(fields['in'], fields['out'], dims)
             return seq
 
         return cls(**fields)
 
-    def configure(self, inpt, out):
+    def configure(self, inpt, out, dims={}):
         self.inpt = inpt
         self.out = out
         for op in self.operations:
             op.relabel(self.new_labels)
+            if dims:
+                op.dims = dims
 
     def __repr__(self):
         repr_fmt = ('OperationSequence(name={name}, ' +
@@ -85,7 +88,6 @@ class OperationSequence(yaml.YAMLObject):
     @property
     def new_labels(self):
         if not self._new_labels:
-            print(self.out)
             self._new_labels = {
                 value: key for key, value in self.out.items()}
             self._new_labels.update({
@@ -111,7 +113,7 @@ class OperationSequence(yaml.YAMLObject):
         for op in self.operations:
             inpt_data = copy.deepcopy(op.inpt)
 
-            # Get datasets from the case, if data exists already
+            # Get hardcoded data from the case
             inpt_data.update({
                 key: case.dir_structure.data[value]
                 for key, value in inpt_data.items()
@@ -121,13 +123,13 @@ class OperationSequence(yaml.YAMLObject):
             if inpt_data:
                 logging.debug('Input files located at:')
             for key, ds in inpt_data.items():
-                if hasattr(ds, 'loc'):
-                    logging.debug('    %s <- %s', key, ds.loc.path)
+                if hasattr(ds, 'path'):
+                    logging.debug('    %s <- %s', key, ds.path)
 
             if case.dir_structure.output_files:
                 logging.debug('Output files located at:')
             for key, loc in case.dir_structure.output_files.items():
-                if hasattr(ds, 'path'):
+                if hasattr(loc, 'path'):
                     logging.debug('    %s <- %s', key, loc.path)
 
             # Run operation
