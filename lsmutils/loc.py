@@ -2,18 +2,35 @@ import calendar
 import copy
 import datetime
 import logging
+from math import floor, ceil
 import os
 import pandas as pd
 import yaml
 
-from .dataset import GDALDataset, BoundaryDataset, DataFrameDataset
+from .dataset import (
+    GDALDataset,
+    BoundaryDataset,
+    NetCDFDataset,
+    DataFrameDataset
+)
+
+class PathSegments(yaml.YAMLObject):
+
+    yaml_tag = u"!PathSegments"
+
+    @classmethod
+    def from_yaml(cls, loader, node):
+        fields = loader.construct_mapping(node, deep=True)
+        return os.path.join(*fields['segments'])
+
 
 class LocatorMeta(yaml.YAMLObjectMetaclass):
 
     def __children__(cls):
         children = {cls.loc_type: cls}
         for child in cls.__subclasses__():
-            children.update({child.loc_type: child})
+            if child.loc_type:
+                children.update({child.loc_type: child})
             children.update(child.__children__())
         return children
 
@@ -30,6 +47,7 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
     dirname = '{temp_dir}'
     default_ext = ''
     variable = ''
+    url = ''
     csvargs = {}
 
     @classmethod
@@ -38,13 +56,20 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
         return cls(**fields)
 
     def __init__(self, file_id='', filename='', dirname='', default_ext='',
-                 variable='', csvargs={}, omit_ext=False, **env):
+                 variable='', url='', csvargs={}, omit_ext=False,
+                 template=None, **env):
+        if template:
+            self.__init__(**template.info, **template.env)
+            return
+
         self.file_id = file_id if file_id else self.file_id
+        ## Is this necessary?
         self.env = env
         self.filename = filename if filename else self.filename
         self.dirname = dirname if dirname else self.dirname
         self.default_ext = default_ext if default_ext else self.default_ext
         self.variable = variable if variable else self.variable
+        self.url = url if url else self.url
         self.csvargs = csvargs if csvargs else self.csvargs
         self.omit_ext = omit_ext
 
@@ -53,7 +78,6 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
     def configure(self, cfg, file_id='', dirname=''):
         self.file_id = file_id if file_id else self.file_id
         self.env.update(cfg)
-        self.env['file_id'] = self.file_id
 
         # Set base directory
         if 'base_dir' in cfg:
@@ -70,11 +94,26 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
         if not os.path.isabs(self.dirname):
             self.dirname = os.path.join(self.base_dir, self.dirname)
 
+        # Render url
+        self.url = self.url.format(**self.env)
+
         # Create directory if it does not exist
         if not os.path.exists(self.dirname):
             os.makedirs(self.dirname)
 
         return self
+
+    @property
+    def info(self):
+        return {
+            'file_id': self.file_id,
+            'filename': self.filename,
+            'dirname': self.dirname,
+            'default_ext': self.default_ext,
+            'variable': self.variable,
+            'url': self.url,
+            'omit_ext': self.omit_ext
+        }
 
     def _path(self, filename, extension):
         if extension:
@@ -150,61 +189,68 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
             self._dataset = self.get_dataset(self)
         return self._dataset
 
-    def get_dataset(self, path):
-        if not path.exists:
-            return None
+    def get_dataset(self, loc):
 
         filetype = self.default_ext if self.default_ext else ''
 
         if filetype=='shp':
             try:
-                dataset = BoundaryDataset(path)
-                if not dataset.dataset is None:
-                    return dataset
-                logging.warning('{} failed to load as shapefile'.format(
-                    path.path))
+                return BoundaryDataset(loc)
             except Exception:
                 logging.error(exc)
                 logging.error('{} failed to load as shapefile'.format(
                     path.path))
 
         if filetype in DataFrameDataset.filetypes:
-            dataset = DataFrameDataset(path, filetype=filetype, **self.csvargs)
-            return dataset
+            return DataFrameDataset(loc, filetype=filetype, **self.csvargs)
 
-        try:
-            dataset = GDALDataset(path, filetype=filetype)
-            if not dataset.dataset is None:
-                return dataset
-            logging.warning('{} failed to load as raster'.format(path.path))
-        except Exception as exc:
-            logging.error(exc)
-            logging.error('{} failed to load as raster'.format(path.path))
+        if filetype in NetCDFDataset.filetypes:
+            return NetCDFDataset(loc)
+
+        if filetype in GDALDataset.filetypes:
+            return GDALDataset(loc, filetype=filetype)
 
         return None
+
+    def __str__(self):
+        return self.path
 
 
 class LocatorCollection(Locator):
 
-    loc_type = 'list'
-    cols = ['i']
+    loc_type = None
+    cols = NotImplemented
+    id = NotImplemented
 
-    def __init__(self, locs, meta=[], file_id='',
-                 dirname='', default_ext='', variable='', omit_ext=False,
-                 **env):
+    def __init__(self, file_id='', filename='',
+                 dirname='', default_ext='', variable='', url='',
+                 omit_ext=False, template=None, id={}, **env):
+        if template:
+            self.__init__(**template.info, **template.env, **env)
+            return
+
+        self.id = id if id else self.id
+        for id, fmt in self.id.items():
+            if not id in filename and not id in dirname:
+                filename = '.'.join([filename, fmt])
+
         self.file_id = file_id
-        self.locs = locs
-        if not meta:
-            for i in range(len(locs) - 1):
-                meta_dict = {'i': i}
-                meta.append(meta_dict.copy())
-                meta_dict.update(env)
-        self.meta = pd.DataFrame.from_records(meta)
-
+        self.filename = filename
         self.dirname = dirname
         self._default_ext = default_ext
         self.variable = variable
+        self.url = url
         self.omit_ext = omit_ext
+        self.env = env
+
+        self.i = 0
+        self.meta = pd.DataFrame()
+        self.locs = []
+
+        try:
+            self.expand(**env)
+        except TypeError:
+            logging.warning('Required locator metadata missing: %s', self.id)
 
     @classmethod
     def from_yaml(cls, loader, node):
@@ -230,7 +276,8 @@ class LocatorCollection(Locator):
             return ds_list[0]
         meta_iter = self.meta.to_dict('records')
         for ds in ds_list:
-            ds.meta = meta_iter.pop(0)
+            if hasattr(ds, 'meta'):
+                ds.meta = meta_iter.pop(0)
         return ds_list
 
     @property
@@ -267,39 +314,92 @@ class LocatorCollection(Locator):
         qry = ' and '.join(['{} <= {}'.format(k,v) for k,v in meta.items()])
         return self.locs[self.meta.query(qry)[[self.file_id]]]
 
+    def __iter__(self):
+        self.i = 0
+        return self
+
+    def __next__(self):
+        if self.i >= len(self.locs):
+            raise StopIteration
+        loc = self.locs[self.i]
+        meta = self.meta.iloc[self.i].to_dict()
+        self.i += 1
+        return loc, meta
+
+    def __str__(self):
+        pth_list = [loc.path for loc in self.locs]
+        if len(pth_list) == 1:
+            return self.path
+        return '\n    '.join(self.path)
+
+
+class ListLoc(LocatorCollection):
+
+    yaml_tag = '!DataList'
+    loc_type = 'list'
+    id = {'': ''}
+
+    def expand(self, meta=[], locs=[], **env):
+        self.locs = locs.copy()
+        records = []
+
+        for i, info in enumerate(meta):
+            record = {'i': i}
+            record.update(info)
+            records.append(record)
+
+            if locs:
+                self.locs.append(
+                    Locator(template=locs[i], **self.info, **record,
+                            **env))
+            else:
+                self.locs.append(Locator(**self.info, **record, **env))
+
+        if records:
+            self.meta = pd.DataFrame.from_records(records, index='i')
+
+
 class MonthlyLoc(LocatorCollection):
 
     yaml_tag = '!MonthlyFile'
     loc_type = 'monthly'
     cols = ['month', 'month_name', 'month_abbr']
+    id = {'month': '{month:02d}'}
 
-    def __init__(self, filename, months=range(1,13),
-                 file_id='', dirname='', default_ext='',
-                 variable='', omit_ext=False, **env):
-        locs = []
-        meta = []
-        i = 0
+    def expand(self, months=range(1,13), **env):
+        self.locs = []
+        records = []
 
-        if not 'month' in filename:
-            filename += '.{month:02d}'
-        for month in months:
-            meta_dict = {
+        for i, month in enumerate(months):
+            record = {
+                'i': i,
                 'month': month,
                 'month_name': calendar.month_name[month],
                 'month_abbr': calendar.month_abbr[month]
             }
-            meta.append(meta_dict.copy())
-            meta_dict.update(env)
-            loc = Locator(
-                file_id=file_id,
-                filename=filename, dirname=dirname, default_ext=default_ext,
-                variable=variable, omit_ext=omit_ext,
-                **meta_dict)
-            locs.append(loc)
-            i += 1
+            records.append(record)
+            self.locs.append(Locator(**self.info, **record, **env))
+        self.meta = pd.DataFrame.from_records(records, index='i')
 
-        super(MonthlyLoc, self).__init__(locs, meta, **env)
+class DatetimeLoc(LocatorCollection):
 
+    yaml_tag = '!DatetimeFile'
+    loc_type = 'datetimes'
+    cols = ['datetime']
+    id = {'datetime': '{datetime:%Y%m%d%H%M%S}'}
+
+    def expand(self, datetimes, **env):
+        self.locs = []
+        records = []
+
+        for i, datetime in enumerate(datetimes):
+            record = {
+                'i': i,
+                'datetime': datetime
+            }
+            records.append(record)
+            self.locs.append(Locator(**self.info, **record, **env))
+        self.meta = pd.DataFrame.from_records(records, index='i')
 
 class TileLoc(LocatorCollection):
 
@@ -308,74 +408,58 @@ class TileLoc(LocatorCollection):
     cols = [
         'min_lon', 'min_lat', 'max_lon', 'max_lat',
         'cardinal_lon', 'cardinal_lat', 'abs_min_lon', 'abs_min_lat']
+    id = {
+        'lon': '{min_lon}',
+        'lat': '{min_lat}'
+    }
 
-    def __init__(self, filename, bbox=None,
-                 file_id='', dirname='', default_ext='',
-                 variable='', omit_ext=False, **env):
-        if not ('lat' in filename and 'lon' in filename):
-            filename += '.{min_lon}.{min_lat}'
+    def expand(self, bbox=None, **env):
 
-        locs = []
-        meta = []
-        i = 0
-        for lon in range(int(bbox.min.lon), int(bbox.max.lon)):
-            for lat in range(int(bbox.min.lat), int(bbox.max.lat)):
-                meta_dict = {
-                    'i': i,
-                    'min_lon': bbox.min.lon,
-                    'min_lat': bbox.min.lat,
-                    'max_lon': bbox.min.lon + 1,
-                    'max_lat': bbox.min.lat + 1,
-                    'cardinal_lon': 'E' if bbox.min.lon >= 0 else 'W',
-                    'cardinal_lat': 'N' if bbox.min.lat >= 0 else 'S',
-                    'abs_min_lon': abs(bbox.min.lon),
-                    'abs_min_lat': abs(bbox.min.lat)
-                }
-                meta.append(meta_dict.copy())
-                meta_dict.update(env)
-                loc = Locator(
-                    file_id=file_id,
-                    filename=filename, dirname=dirname, default_ext=default_ext,
-                    variable=variable, omit_ext=omit_ext,
-                    **meta_dict
-                )
-                locs.append(loc)
-                i += 1
+        self.locs = []
+        records = []
 
-        super(TileLoc, self).__init__(locs, meta, **env)
+        min_lon = floor(bbox.min.lon)
+        max_lon = ceil(bbox.max.lon)
+        min_lat = floor(bbox.min.lat)
+        max_lat = ceil(bbox.max.lat)
+
+        for i, (lon, lat) in enumerate(zip(
+                range(int(min_lon), int(max_lon)),
+                range(int(min_lat), int(max_lat)))):
+            record = {
+                'i': i,
+                'min_lon': min_lon,
+                'min_lat': min_lat,
+                'max_lon': min_lon + 1,
+                'max_lat': min_lat + 1,
+                'cardinal_lon': 'E' if min_lon >= 0 else 'W',
+                'cardinal_lat': 'N' if min_lat >= 0 else 'S',
+                'abs_min_lon': abs(min_lon),
+                'abs_min_lat': abs(min_lat)
+            }
+            records.append(record.copy())
+            self.locs.append(Locator(**self.info, **record, **env))
+        self.meta = pd.DataFrame.from_records(records, index='i')
 
 class LayeredLoc(LocatorCollection):
 
     yaml_tag = '!Layers'
     loc_type = 'layers'
     cols = ['layer_min', 'layer_max']
+    id = {'layer': '{layer_min}'}
 
-    def __init__(self, filename, layers=[],
-                 file_id='', dirname='', default_ext='',
-                 variable='', omit_ext=False, **env):
-        if not ('layer' in filename or 'layer' in dirname):
-            filename += '.{layer_min}'
-
-        locs = []
-        meta = []
-        i = 0
-        for min, max in zip(layers[:-1], layers[1:]):
-            meta_dict = {
+    def expand(self, layers=[], **env):
+        self.locs = []
+        records = []
+        for i, (min, max) in enumerate(zip(layers[:-1], layers[1:])):
+            record = {
+                'i': i,
                 'layer_min': min,
                 'layer_max': max
             }
-            meta.append(meta_dict.copy())
-            meta_dict.update(env)
-            loc = Locator(
-                file_id=file_id,
-                filename=filename, dirname=dirname, default_ext=default_ext,
-                variable=variable, omit_ext=omit_ext,
-                **meta_dict
-            )
-            locs.append(loc)
-            i += 1
-
-        super(LayeredLoc, self).__init__(locs, meta, **env)
+            records.append(record)
+            self.locs.append(Locator(**self.info, **record, **env))
+        self.meta = pd.DataFrame.from_records(records, index='i')
 
 
 class MultipleTypeLoc(LocatorCollection):
@@ -383,70 +467,50 @@ class MultipleTypeLoc(LocatorCollection):
     yaml_tag = '!MultiType'
     loc_type = 'types'
     cols = ['type']
+    id = {'type': '{type}'}
 
-    def __init__(self, filename, types=[],
-                 file_id='', dirname='', default_ext='',
-                 variable='', omit_ext=False, **env):
-        if not ('type' in filename or 'type' in dirname):
-            filename += '.{type}'
-
-        locs = []
-        meta = []
-        i = 0
-        for type in types:
-            meta_dict = {
+    def expand(self, types, **env):
+        self.locs = []
+        records = []
+        for i, type in enumerate(types):
+            record = {
+                'i': i,
                 'type': type
             }
-            meta.append(meta_dict.copy())
-            meta_dict.update(env)
-            loc = Locator(
-                file_id=file_id,
-                filename=filename, dirname=dirname, default_ext=default_ext,
-                variable=variable, omit_ext=omit_ext,
-                **meta_dict
-            )
-            locs.append(loc)
-            i += 1
-
-        super(MultipleTypeLoc, self).__init__(locs, meta, **env)
-
+            records.append(record)
+            self.locs.append(Locator(**self.info, **record, **env))
+        self.meta = pd.DataFrame.from_records(records, index='i')
 
 class ComboLocatorCollection(LocatorCollection):
 
     yaml_tag = '!Combo'
     loc_type = 'combo'
+    id = {'': ''}
 
-    def __init__(self, filename, dimensions,
-                 file_id='', dirname='', default_ext='',
-                 variable='', omit_ext=False, **kwargs):
-        self.env = kwargs
+    def expand(self, dimensions, **env):
         self.cols = []
-        locs = [None]
-        meta = None
+        self.locs = [None]
+        self.meta = None
+
         while dimensions:
             new_locs = []
             new_meta = []
             loc_cls = Locator.__children__()[dimensions.pop(0)]
-            records = [{}] if (meta is None) else meta.to_dict('records')
-            for loc, rec in zip(locs, records):
-                kwargs.update(rec)
-                collection = loc_cls(
-                    file_id=file_id,
-                    filename=loc.filename if loc else filename,
-                    dirname=dirname,
-                    default_ext=default_ext,
-                    variable=variable,
-                    omit_ext=omit_ext,
-                    **kwargs
-                )
+            records = (
+                [{}] if (self.meta is None)
+                else self.meta.to_dict('records')
+            )
+            for loc, rec in zip(self.locs, records):
+                env.update(rec)
+                collection = loc_cls(**self.info, **env)
+                self.filename = collection.filename
                 self.cols.extend(collection.cols)
                 new_locs.extend(collection.locs)
+
                 # Convert dataframe to list of tuples
                 for key, value in rec.items():
                     collection.meta[key] = value
                 new_meta.append(collection.meta)
 
-            locs = new_locs
-            meta = pd.concat(new_meta, ignore_index=True)
-        super(ComboLocatorCollection, self).__init__(
-            locs, meta.to_dict('records'), **kwargs)
+            self.locs = new_locs
+            self.meta = pd.concat(new_meta, ignore_index=True)

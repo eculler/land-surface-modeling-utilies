@@ -1,0 +1,58 @@
+!OpSequence
+name: dhsvm-polaris
+title: DHSVM Soil Types from POLARIS
+doc: Download POLARIS data and convert to DHSVM soil type input file
+operations:
+  - !Operation
+    name: download-polaris
+    dims:
+      - types
+      - layers
+      - tiles
+    in:
+      input-ds: polaris
+    out:
+      polaris: polaris
+  - !Operation
+    name: merge
+    dims:
+      - types
+      - layers
+    in:
+      input-ds: polaris
+    out:
+      merged: polaris-full
+  - !OpSequence
+    name: align
+    dims:
+      - types
+      - layers
+    in:
+      input: polaris-full
+      template: template
+      padding: !Coord
+        x: 0.1
+        y: 0.1
+      algorithm: bilinear
+    out:
+      matched: soil
+  - !Operation
+    name: average-layers
+    dims:
+      - types
+    in:
+      layered-ds: soil
+    out:
+      average: averaged-soil
+  - !Operation
+    name: soil-type
+    in:
+      texture-ds: averaged-soil
+    out:
+      type: soil-type
+  - !Operation
+    name: dhsvm-soil-type
+    in:
+      input-ds: soil-type
+    out:
+      netcdf: soil-type-nc

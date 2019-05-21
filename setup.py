@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(name='lsmutils',
       version='0.1',
@@ -7,11 +7,14 @@ setup(name='lsmutils',
       author='Elsa Culler',
       author_email='eculler@gmail.com',
       license='MIT',
-      packages=['lsmutils'],
+      packages=find_packages(),
       install_requires=[
           'geopandas',
+          'lxml',
           'netCDF4',
-          'pyyaml'
+          'pydap',
+          'pyyaml',
+          'requests'
       ],
       include_package_data=True,
       zip_safe=False)

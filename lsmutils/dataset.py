@@ -1,5 +1,6 @@
 import logging
 from osgeo import gdal, gdal_array, ogr, osr
+import netCDF4 as nc4
 import numpy as np
 import pandas as pd
 
@@ -27,22 +28,26 @@ class DataFrameDataset(Dataset):
         self.meta = {}
         self._dataset = None
 
+    def new(self, data=None, index=None, columns=None):
+        self._dataset = pd.DataFrame(data, index, columns)
+        return self
+
     @property
     def dataset(self):
-        if self._dataset == None:
+        if self._dataset is None:
             self._dataset = pd.read_csv(self.loc.path, **self.csvargs)
         return self._dataset
 
     def save(self):
-        self.saveas(filetype)
+        self.saveas(self.filetype)
 
     def saveas(self, filetype, datatype=None):
         if self.filetypes[filetype] == 'csv':
-            self.dataset.to_csv(self.loc.ext[filetype], **csvargs)
+            self.dataset.to_csv(self.loc.path, **self.csvargs)
 
 class SpatialDataset():
 
-    def __init__(self, ds_min, ds_max, padding=None):
+    def __init__(self, ds_min=None, ds_max=None, padding=None):
 
         if not padding is None:
             ds_min = ds_min - padding
@@ -52,6 +57,7 @@ class SpatialDataset():
 
         self._min = ds_min
         self._max = ds_max
+        self._center = None
         self._resolution = None
         self._ul = None
         self._ur = None
@@ -95,7 +101,7 @@ class SpatialDataset():
     @property
     def bbox(self):
         if not self._bbox:
-            self._bbox = BBox(self.ll, self.ur)
+            self._bbox = BBox(llc=self.ll, urc=self.ur)
         return self._bbox
 
     @property
@@ -111,6 +117,133 @@ class SpatialDataset():
             self._rev_warp_output_bounds = [self.cmin.x, self.cmin.y,
                                             self.cmax.x, self.cmax.y]
         return self._rev_warp_output_bounds
+
+    @property
+    def center(self):
+        if not self._center:
+            self._center = (self.max + self.min) / 2.
+        return self._center
+
+class NetCDFDataset(SpatialDataset):
+
+    filetypes = {
+        'nc': 'nc'
+    }
+
+    xdims = ['x', 'X', 'lon', 'longitude']
+    ydims = ['y', 'Y', 'lat', 'latitude']
+
+    def __init__(self, loc):
+        self.loc = loc
+        self.meta = {}
+        self.mod = 'r'
+
+        super().__init__()
+
+        self._cgrid = None
+        self._cmin = None
+        self._cmax = None
+        self._coords = None
+        self._dataset = None
+        self._resolution = None
+        self._size = None
+        self._xdim = None
+        self._ydim = None
+
+    @property
+    def dataset(self):
+        if not self._dataset:
+            self._dataset = nc4.Dataset(self.loc.path, mode=self.mod)
+        return self._dataset
+
+    @property
+    def xdim(self):
+        if not self._xdim:
+            self._xdim = [
+                dim for dim in self.dataset.dimensions
+                if dim in self.xdims][0]
+        return self._xdim
+
+    @property
+    def ydim(self):
+        if not self._ydim:
+            self._ydim = [
+                dim for dim in self.dataset.dimensions
+                if dim in self.ydims][0]
+        return self._ydim
+
+    @property
+    def cgrid(self):
+        if not self._cgrid:
+            self._cgrid = CoordProperty(
+                self.dataset[self.xdim][:],
+                self.dataset[self.ydim][:])
+        return self._cgrid
+
+    @property
+    def coords(self):
+        if not self._coords:
+            xx, yy = np.meshgrid(self.cgrid.x, self.cgrid.y)
+            self._coords = [
+                CoordProperty(x, y)
+                for x, y in zip(xx.flatten(), yy.flatten())
+            ]
+        return self._coords
+
+    @property
+    def cmin(self):
+        if not self._cmin:
+            self._cmin = CoordProperty(min(self.cgrid.x), min(self.cgrid.y))
+        return self._cmin
+
+    @property
+    def cmax(self):
+        if not self._cmax:
+            self._cmax = CoordProperty(max(self.cgrid.x), max(self.cgrid.y))
+        return self._cmax
+
+    @property
+    def max(self):
+        if not self._max:
+            self._max = CoordProperty(
+                self.cmax.x + self.res.x / 2,
+                self.cmax.y + self.res.y / 2 )
+        return self._max
+
+    @property
+    def min(self):
+        if not self._min:
+            self._min = CoordProperty(
+                self.cmin.x - self.res.x / 2,
+                self.cmin.y - self.res.y / 2 )
+        return self._min
+
+    @property
+    def center(self):
+        if not self._center:
+            self._center = (self.cmax + self.cmin) / 2.
+        return self._center
+
+    @property
+    def resolution(self):
+        if not self._resolution:
+            self._resolution = CoordProperty(
+                x=abs(np.mean(self.cgrid.x[1:] - self.cgrid.x[:-1])),
+                y=abs(np.mean(self.cgrid.y[1:] - self.cgrid.y[:-1]))
+            )
+        return self._resolution
+
+    @property
+    def res(self):
+        return self.resolution
+
+    @property
+    def size(self):
+        if not self._size:
+            self._size = CoordProperty(
+                x=self.dataset.dimensions[self.xdim].size,
+                y=self.dataset.dimensions[self.ydim].size)
+        return self._size
 
 
 class GDALDataset(SpatialDataset):
@@ -143,7 +276,6 @@ class GDALDataset(SpatialDataset):
         self._cmin = None
         self._cmax = None
         self._cgrid = None
-        self._center = None
         self._gridcorners = None
         self._grid = None
         self._ul = None
@@ -363,10 +495,8 @@ class GDALDataset(SpatialDataset):
                         self.geotransform[0])
             y_bounds = (self.geotransform[3] + res_y * self.size.y,
                         self.geotransform[3])
-            self._max = CoordProperty(x=max(x_bounds) + .5 * self.res.x,
-                                      y=max(y_bounds) + .5 * self.res.y)
-            self._min = CoordProperty(x=min(x_bounds) - .5 * self.res.x,
-                                      y=min(y_bounds) - .5 * self.res.y)
+            self._max = CoordProperty(x=max(x_bounds), y=max(y_bounds))
+            self._min = CoordProperty(x=min(x_bounds), y=min(y_bounds))
         return self._max
 
     @property
@@ -379,8 +509,10 @@ class GDALDataset(SpatialDataset):
                         self.geotransform[0])
             y_bounds = (self.geotransform[3] + res_y * self.size.y,
                         self.geotransform[3])
-            self._cmax = CoordProperty(x=max(x_bounds), y=max(y_bounds))
-            self._cmin = CoordProperty(x=min(x_bounds), y=min(y_bounds))
+            self._cmax = CoordProperty(x=max(x_bounds),
+                                      y=max(y_bounds))
+            self._cmin = CoordProperty(x=min(x_bounds),
+                                      y=min(y_bounds))
         return self._cmax
 
     @property
@@ -404,11 +536,11 @@ class GDALDataset(SpatialDataset):
     @property
     def cgrid(self):
         if self._cgrid is None:
-            xgrid = np.linspace(self.cmin.x + .5 * self.res.x,
-                                self.cmax.x - .5 * self.res.x,
+            xgrid = np.linspace(self.cmin.x,
+                                self.cmax.x,
                                 self.size.x)
-            ygrid = np.linspace(self.cmin.y + .5 * self.res.y,
-                                self.cmax.y - .5 * self.res.y,
+            ygrid = np.linspace(self.cmin.y,
+                                self.cmax.y,
                                 self.size.y)
             self._cgrid = CoordProperty(x=xgrid, y=ygrid)
         return self._cgrid
@@ -431,20 +563,21 @@ class GDALDataset(SpatialDataset):
                 ds_max=self.gridcmax(res),
                 padding=padding)
 
-    @property
-    def center(self):
-        if not self._center:
-            self._center = (self.max - self.min) / 2.
-        return self._center
+    def get_value(self, coord):
+        xi = floor((coord.x - self.min.x) / self.res.x)
+        yi = floor((coord.y - self.min.y) / self.res.y)
+        return self.array[yi, xi]
 
 
 class BoundaryDataset(SpatialDataset):
+
     def __init__(self, loc, update=False, driver='ESRI Shapefile'):
         self.loc = loc
         self.update = update
         self.driver = driver
         self.meta = {}
         self._dataset = None
+        self._srs = None
         self._layers = None
         self._min = None
         self._max = None
@@ -452,11 +585,15 @@ class BoundaryDataset(SpatialDataset):
         self._ur = None
         self._ll = None
         self._lr = None
+        self._bbox = None
 
     def new(self):
         driver = ogr.GetDriverByName(self.driver)
         self._dataset = driver.CreateDataSource(self.loc.path)
         return self
+
+    def close(self):
+        self.dataset.Destroy()
 
     @property
     def dataset(self):
@@ -470,6 +607,20 @@ class BoundaryDataset(SpatialDataset):
     @dataset.deleter
     def dataset(self):
         self._dataset = None
+
+    @property
+    def srs(self):
+        if not self._srs:
+            self._srs = self.layers[0].GetSpatialRef()
+        return self._srs
+
+        @srs.setter
+        def srs(self, new_espg):
+            logging.debug('Trying projection {}'.format(self.espg))
+            srs = osr.SpatialReference()
+            srs.ImportFromEPSG(new_espg)
+            self._dataset.SetProjection(srs.ExportToWkt())
+            self._srs = srs
 
     @property
     def layers(self):

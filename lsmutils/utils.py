@@ -7,6 +7,7 @@ import numpy as np
 class CoordProperty(yaml.YAMLObject):
 
     yaml_tag = u"!Coord"
+    isfile = False
 
     def __init__(self, x=None, y=None, lon=None, lat=None, epsg=4326):
         if x is None:
@@ -82,6 +83,7 @@ class CoordProperty(yaml.YAMLObject):
 class BBox(yaml.YAMLObject):
 
     yaml_tag = u"!BBox"
+    isfile = False
 
     def __init__(self, llc, urc):
         self._llc = llc
@@ -102,8 +104,13 @@ class BBox(yaml.YAMLObject):
     @property
     def max(self):
         return self._urc
-        
+
     @classmethod
     def from_yaml(cls, loader, node):
         fields = loader.construct_mapping(node, deep=True)
         return cls(**fields)
+
+    def contains(self, coord):
+        return (
+            self.llc.x <= coord.x <= self.urc.x
+            and self.llc.y <= coord.y <= self.urc.y)

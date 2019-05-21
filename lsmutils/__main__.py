@@ -3,8 +3,8 @@ import logging
 import sys
 import yaml
 
-from .sequence import run_cfg
-from .operation import Operation
+from lsmutils.sequence import run_cfg
+from lsmutils.operation.operation import Operation
 
 if __name__=='__main__':
 

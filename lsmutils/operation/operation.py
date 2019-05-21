@@ -7,6 +7,8 @@ import glob
 import inspect
 import logging
 import netCDF4 as nc4
+from metpy.calc import relative_humidity_from_specific_humidity
+from metpy.units import units
 import numpy as np
 import ogr
 import os
@@ -20,9 +22,9 @@ import subprocess
 import yaml
 import collections
 
-from .loc import *
-from .dataset import GDALDataset, BoundaryDataset, DataFrameDataset
-from .utils import CoordProperty, BBox
+from lsmutils.loc import *
+from lsmutils.dataset import GDALDataset, BoundaryDataset, DataFrameDataset
+from lsmutils.utils import CoordProperty, BBox
 
 OutputType = collections.namedtuple(
     'OutputType', ['key', 'filetype', 'loctype'])
@@ -43,8 +45,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     A parent class to perform some operation on a raster dataset
 
     Child classes must define at minimum:
-      - name: a human-readable name,
-      - type_id: a path-friendly identifier
+      - title: a human-readable name,
+      - name: a path-friendly identifier
+      - output_types: a list to parse in to locators
+        for output files
       - run(): a function to perform the raster operation.
     """
 
@@ -55,10 +59,10 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     output_types = NotImplemented
     filename_format = '{output_label}'
 
-    end_msg = '{title} saved at {path}'
+    end_msg = '{title} saved at {loc}'
     error_msg = '{title} calculation FAILED'
 
-    def __init__(self, inpt, out, dims={}):
+    def __init__(self, inpt, out, dims=[]):
         self.inpt = inpt
         self.out = out
         self.dims = dims
@@ -73,13 +77,9 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     def configure(self, cfg, locs={}, scripts={}, **kwargs):
         logging.debug('Configuring %s operation', self.name)
 
-        self._resolution = None
-        self._input_datasets = None
-
         # Extract configuration variables
         self.kwargs = {
             key.replace('-', '_'): value for key, value in kwargs.items()}
-        print(self.kwargs)
         self.cfg = cfg
         self.log_level = cfg['log_level']
         self.case_id = cfg['case_id']
@@ -90,14 +90,12 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         # Get non-automatic attributes for filename
         self.attributes = kwargs.copy()
         self.attributes
-        self.attributes['res'] = self.resolution
         self.attributes.update(
                 {title: getattr(self, title) for title in dir(self)})
 
         logging.debug('Formatting %s file names', self.name)
         self.filenames = {
             ot.key: self.filename_format.format(
-                    output_type=ot.key,
                     output_label=self.get_label(ot.key),
                     **self.attributes)
             for ot in self.output_types}
@@ -113,26 +111,28 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             env = {}
             for loc in self.kwargs.values():
                 if hasattr(loc, 'env'):
+                    print(loc.env)
                     env.update(loc.env)
+            env['dimensions'] = self.dims.copy()
             self.locs = {
                 ot.key: ComboLocatorCollection(
-                    self.filenames[ot.key],
-                    self.dims.copy(),
+                    filename=self.filenames[ot.key],
                     default_ext=ot.filetype,
-                    **env
+                    **copy.deepcopy(env)
                     ).configure(cfg)
                 for ot in self.output_types
             }
+
         # File paths under the local key, not the parent key
+        ## Is this necessary?
         alt_locs = {}
         for key, label in self.out.items():
             if label in locs:
                 if not locs[label].default_ext:
-                    for ot in self.output_types:
-                        if key == ot.key:
-                            # Substitute file extensions from output type
-                            locs[label].default_ext = ot.filetype
-                            alt_locs[key] = locs.pop(label)
+                    for ot in [ot for ot in self.output_types if key == ot.key]:
+                        # Substitute file extensions from output type
+                        locs[label].default_ext = ot.filetype
+                        alt_locs[key] = locs.pop(label)
         self.locs.update(alt_locs)
 
         for key, loc in self.locs.items():
@@ -153,42 +153,15 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
 
     def relabel(self, new_labels):
         for pykey, dsname in self.inpt.items():
-            if dsname in new_labels:
+            if str(dsname) in new_labels:
                 self.inpt[pykey] = new_labels[dsname]
-                if dsname in self.dims:
-                    self.dims[new_labels[dsname]] = self.dims.pop(dsname)
                 logging.debug(
-                    'Relabelled %s to %s', dsname, self.inpt[pykey])
+                    'Relabelled input %s to %s', dsname, new_labels[dsname])
         for pykey, dsname in self.out.items():
-            if dsname in new_labels:
+            if str(dsname) in new_labels:
                 self.out[pykey] = new_labels[dsname]
                 logging.debug(
-                    'Relabelled %s to %s', dsname, self.out[pykey])
-
-    @property
-    def input_datasets(self):
-        if not self._input_datasets:
-            self._input_datasets = [
-                ds for key, ds in self.kwargs.items()
-                    if key.endswith('_ds')]
-        return self._input_datasets
-
-    @property
-    def resolution(self):
-        if not self._resolution:
-            if self.input_datasets:
-                for ds in self.input_datasets:
-                    try:
-                        self._resolution = ds.resolution
-                    except AttributeError:
-                        continue
-            elif 'resolution' in self.attributes:
-                self._resolution = CoordProperty(
-                        self.attributes['resolution'],
-                        self.attributes['resolution'])
-            else:
-                self._resolution = CoordProperty(0, 0)
-        return self._resolution
+                    'Relabelled output %s to %s', dsname, new_labels[dsname])
 
     def run(self, **kwargs):
         raise NotImplementedError
@@ -196,25 +169,24 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     def save(self):
         logging.info('Calculating %s with data:', self.title)
         for key, value in self.kwargs.items():
-            if hasattr(value, 'loc'):
-                if hasattr(value.loc, 'locs'):
-                    for loc in value.locs:
-                        logging.info('        %s\n', loc.path)
-                elif hasattr(value.loc, 'path'):
-                    logging.info('    %s <- %s\n', key, value.loc.path)
+            if hasattr(value, 'path'):
+                logging.info('    %s\n    %s', key, value)
             else:
-                logging.info('    %s <- %s\n', key, value)
+                logging.info('    %s\n    %s', key, value)
 
         # Perform raster operation
+        dim_values = None
         if self.dims:
             # This is sloppy
             # it relies on only a single locator collection
             locs = copy.copy(self.locs)
 
             # Get parameter combinations from locator collections
-            for key, loc in self.kwargs.items():
+            for loc in self.kwargs.values():
                 if hasattr(loc, 'cols'):
-                    dim_values = self.kwargs[key].get_dim_values(self.dims)
+                    dim_values = loc.get_dim_values(self.dims)
+
+        if not dim_values is None:
             # Run operation for each combination
             i = 0
             for row in dim_values.to_dict('records'):
@@ -244,209 +216,9 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
 
         # Report status
         for key, loc in self.locs.items():
-            logging.info(self.end_msg.format(title=self.title, path=loc.path))
+            logging.info(self.end_msg.format(title=self.title, loc=loc))
 
         return self.locs
-
-class MergeOp(Operation):
-
-    title = 'Merged Raster'
-    name = 'merge'
-    output_types = [OutputType('merged', 'gtif')]
-
-    def run(self, raster_list):
-        subprocess.call([
-            'gdal_merge.py', '-o',
-            self.locs['merged'].path] +
-            [ds.loc.path for ds in raster_list])
-
-
-class MatchRasterOp(Operation):
-
-    title = 'Warp dataset to match a template raster'
-    name = 'match-raster'
-    output_types = [OutputType('matched', 'gtif')]
-
-    def run(self, input_ds, template_ds=None, algorithm='bilinear'):
-        print(template_ds.warp_output_bounds)
-        agg_warp_options = gdal.WarpOptions(
-            outputBounds = template_ds.rev_warp_output_bounds,
-            width = template_ds.size.x,
-            height = template_ds.size.y,
-            resampleAlg=algorithm,
-        )
-        gdal.Warp(
-            self.locs['matched'].path,
-            input_ds.dataset,
-            options=agg_warp_options)
-
-
-class GridAlignOp(Operation):
-
-    title = 'Align Dataset'
-    name = 'grid-align'
-    output_types = [OutputType('aligned', 'gtif')]
-
-    def run(self, input_ds,
-            template_ds=None, bbox=None,
-            resolution=CoordProperty(x=1/240., y=1/240.), grid_res=None,
-            padding=CoordProperty(x=0, y=0),
-            algorithm='bilinear'):
-        if not grid_res:
-            grid_res = resolution
-        if template_ds:
-            resolution = template_ds.resolution
-            bbox = copy.copy(template_ds.bbox)
-        if bbox:
-            grid_box = [bbox.llc.x - padding.x, bbox.llc.y - padding.y,
-                        bbox.urc.x + padding.x, bbox.urc.y + padding.y]
-        else:
-            grid_box = input_ds.gridcorners(
-                    grid_res, padding=padding).warp_output_bounds
-
-
-        agg_warp_options = gdal.WarpOptions(
-            xRes = resolution.x,
-            yRes = resolution.y,
-            outputBounds = grid_box,
-            targetAlignedPixels = True,
-            resampleAlg=algorithm,
-        )
-        gdal.Warp(
-            self.locs['aligned'].path,
-            input_ds.dataset,
-            options=agg_warp_options)
-
-
-class CropOp(Operation):
-
-    title = 'Crop Raster Dataset'
-    name = 'crop'
-    output_types = [OutputType('cropped', 'gtif')]
-
-    def run(self, input_ds,
-            template_ds=None, bbox=None,
-            padding=CoordProperty(x=0, y=0),
-            algorithm='bilinear'):
-        if template_ds:
-            template_bbox = copy.copy(template_ds.bbox)
-            # SRS needs to match for output bounds and input dataset
-            if not template_ds.srs == input_ds.srs:
-                transform = osr.CoordinateTransformation(
-                    template_ds.srs, input_ds.srs)
-                bbox = BBox(
-                    llc = CoordProperty(
-                        *transform.TransformPoint(
-                            template_bbox.llc.x, template_bbox.llc.y)[:-1]),
-                    urc = CoordProperty(
-                        *transform.TransformPoint(
-                            template_bbox.urc.x, template_bbox.urc.y)[:-1])
-                )
-        grid_box = [bbox.llc.x - padding.x, bbox.llc.y - padding.y,
-                    bbox.urc.x + padding.x, bbox.urc.y + padding.y]
-
-        agg_warp_options = gdal.WarpOptions(
-            outputBounds = grid_box,
-            resampleAlg=algorithm,
-        )
-        gdal.Warp(
-            self.locs['cropped'].path,
-            input_ds.dataset,
-            options=agg_warp_options)
-
-
-class ClipOp(Operation):
-
-    title = 'Raster clipped to boundary'
-    name = 'clip'
-    output_types = [OutputType('clipped_raster', 'gtif')]
-
-    def run(self, input_ds, boundary_ds, algorithm='bilinear'):
-        clip_warp_options = gdal.WarpOptions(
-            format='GTiff',
-            cutlineDSName=boundary_ds.loc.shp,
-            cutlineBlend=.5,
-            dstNodata=input_ds.nodata,
-            resampleAlg=algorithm
-        )
-        gdal.Warp(path, input_ds.dataset, options=clip_warp_options)
-
-
-class ReprojectRasterOp(Operation):
-
-    title = 'Reproject raster'
-    name = 'reproject-raster'
-    output_types = [OutputType('reprojected', 'gtif')]
-
-    def run(self, input_ds, template_ds=None, srs=None, algorithm='bilinear'):
-        if template_ds:
-            srs = template_ds.srs
-        agg_warp_options = gdal.WarpOptions(
-            dstSRS = srs,
-            resampleAlg=algorithm)
-        gdal.Warp(
-            self.locs['reprojected'].path,
-            input_ds.dataset,
-            options=agg_warp_options)
-
-
-class ReprojectVectorOp(Operation):
-
-    title = 'Reproject Vector Dataset'
-    name = 'reproject-vector'
-    output_types = [OutputType('reprojected', 'shp')]
-
-    def run(self, input_ds, epsg):
-        reproj_ds = BoundaryDataset(
-                self.locs['reprojected'], update=True).new()
-
-        print(input_ds)
-        print(input_ds.loc.path)
-        for layer in input_ds.layers:
-            # SRS transform
-            in_srs = layer.GetSpatialRef()
-            out_srs = osr.SpatialReference()
-            out_srs.ImportFromEPSG(epsg)
-            transform = osr.CoordinateTransformation(in_srs, out_srs)
-
-            # create the output layer
-            reproj_layer = reproj_ds.dataset.CreateLayer(
-                    "{}_{}".format(layer.GetName(), epsg),
-                    geom_type=layer.GetGeomType())
-
-            # add fields
-            layer_defn = layer.GetLayerDefn()
-            for i in range(0, layer_defn.GetFieldCount()):
-                field_defn = layer_defn.GetFieldDefn(i)
-                reproj_layer.CreateField(field_defn)
-
-            # loop through the input features
-            reproj_layer_defn = reproj_layer.GetLayerDefn()
-            feature = layer.GetNextFeature()
-            while feature:
-                # reproject the input geometry
-                geom = feature.GetGeometryRef()
-                geom.Transform(transform)
-
-                # create a new feature with same geometry and attributes
-                reproj_feature = ogr.Feature(reproj_layer_defn)
-                reproj_feature.SetGeometry(geom)
-                for j in range(0, reproj_layer_defn.GetFieldCount()):
-                    reproj_feature.SetField(
-                            reproj_layer_defn.GetFieldDefn(j).GetNameRef(),
-                            feature.GetField(j))
-
-                # add the feature to the shapefile
-                reproj_layer.CreateFeature(reproj_feature)
-
-                # dereference the features and get the next input feature
-                reproj_feature = None
-                feature = layer.GetNextFeature()
-
-        # Save and close the shapefiles
-        del input_ds.dataset
-        del reproj_ds.dataset
-
 
 class SumOp(Operation):
 
@@ -599,35 +371,6 @@ class ClipToCoarseOp(Operation):
         gdal.Warp(self.path.gtif, fine_ds.dataset, options=warp_options)
 
 
-class RemoveSinksOp(Operation):
-
-    title = 'Sinks Removed'
-    name = 'remove-sinks'
-    output_types = [OutputType('no-sinks', 'tif')]
-
-    def run(self, input_ds):
-        # Remove Pits / Fill sinks
-        subprocess.call(['pitremove',
-                         '-z', input_ds.loc.path,
-                         '-fel', self.locs['no-sinks'].no_ext])
-
-
-class FlowDirectionOp(Operation):
-
-    title = 'Flow Direction'
-    name = 'flow-direction'
-    output_types = [
-        OutputType('flow-direction', 'tif'),
-        OutputType('slope', 'tif')
-    ]
-
-    def run(self, dem_ds):
-        subprocess.call([
-            'd8flowdir',
-            '-fel', dem_ds.loc.path,
-            '-p', self.locs['flow-direction'].path,
-            '-sd8', self.locs['slope'].path
-        ])
 
 
 class FlowDistanceOp(Operation):
@@ -697,195 +440,6 @@ class FlowDistanceEuclideanOp(FlowDistanceOp):
         return np.sqrt((lon2 - lon1)**2 + (lat2 - lat1)**2)
 
 
-class SourceAreaOp(Operation):
-
-    title = 'Source Area/Flow Accumulation'
-    name = 'source-area'
-    output_types = [OutputType('source-area', 'tif')]
-
-    def run(self, flow_dir_ds):
-        subprocess.call([
-            'aread8',
-            '-p', flow_dir_ds.loc.path,
-            '-ad8', self.locs['source-area'].no_ext,
-            '-nc'
-        ])
-        source_area_ds = GDALDataset(self.locs['source-area'])
-        source_area_ds.nodata = 0
-
-
-class StreamDefinitionByThresholdOp(Operation):
-    """ Run the TauDEM Stream Definition By Threshold Command """
-
-    title = 'Stream Definition By Threshold'
-    name = 'stream-definition-threshold'
-    output_types = [OutputType('stream-raster', 'tif')]
-
-    def run(self, source_area_ds):
-        threshold = np.percentile(source_area_ds.array, 98)
-        subprocess.call(['threshold',
-                         '-ssa', source_area_ds.loc.path,
-                         '-thresh', '{:.1f}'.format(threshold),
-                         '-src', self.locs['stream-raster'].no_ext])
-
-
-class MoveOutletsToStreamOp(Operation):
-    """ Run the TauDEM Move Outlets to Streams Command """
-
-    title = 'Move Outlets to Streams'
-    name = 'snap-outlet'
-    output_types = [
-        OutputType('outlet-on-stream-nosrs', 'shp'),
-        OutputType('outlet-on-stream', 'shp')
-    ]
-
-    def run(self, flow_dir_ds, stream_ds, outlet_ds):
-        subprocess.call(['moveoutletstostrm',
-                         '-p', flow_dir_ds.loc.path,
-                         '-src', stream_ds.loc.path,
-                         '-o', outlet_ds.loc.path,
-                         '-om', self.locs['outlet-on-stream-nosrs'].path])
-
-        # Copy spatial reference from original outlet
-        in_ds = BoundaryDataset(self.locs['outlet-on-stream-nosrs'])
-        out_ds = BoundaryDataset(self.locs['outlet-on-stream'],
-                                 update=True).new()
-
-        # Create layer with outlet srs
-        in_lyr = in_ds.dataset.GetLayer()
-        outlet_lyr = outlet_ds.dataset.GetLayer()
-        srs = outlet_lyr.GetSpatialRef()
-        geom_type = in_lyr.GetLayerDefn().GetGeomType()
-        out_lyr = out_ds.dataset.CreateLayer('outlet', srs, geom_type)
-
-        # Copy outlet in correct srs
-        outlet = in_lyr.GetFeature(0)
-        out_feature = ogr.Feature(out_lyr.GetLayerDefn())
-        out_feature.SetGeometry(outlet.GetGeometryRef().Clone())
-        out_lyr.CreateFeature(out_feature)
-
-        # Clean up
-        out_ds.dataset.Destroy()
-        in_ds.dataset.Destroy()
-
-
-class LabelGagesOp(Operation):
-    """ Add a sequential id field to each outlet in a shapefile """
-
-    title = 'Labeled Gages'
-    name = 'label-outlet'
-    output_types = [OutputType('labelled-outlet', 'shp')]
-
-    def run(self, outlet_ds):
-        ## Fix this - modify dataset at the new location, not the old
-        outlet_ds.chmod(True)
-        outlet_path = outlet_ds.loc
-
-        layer = outlet_ds.dataset.GetLayer()
-        id_field = ogr.FieldDefn('id', ogr.OFTInteger)
-        layer.CreateField(id_field)
-
-        feature = layer.GetNextFeature()
-        gage_id = 1
-
-        while feature:
-            feature.SetField("id", gage_id)
-            layer.SetFeature(feature)
-            feature = layer.GetNextFeature()
-            gage_id += 1
-
-        # Clean up and copy to correct location
-        outlet_ds.dataset.Destroy()
-        for a_file in glob.glob(r'{}.*'.format(outlet_path.no_ext)):
-            shutil.copyfile(
-                a_file,
-                self.locs['labelled-outlet'].ext(
-                    os.path.splitext(a_file)[1][1:]))
-
-
-class GageWatershedOp(Operation):
-    """
-    Run the TauDEM Gage Watershed Command
-
-    Raster labeling each point by which gage it drains to directly
-    """
-
-    title = 'Gage Watershed'
-    name = 'gage-watershed'
-    output_types = [OutputType('gage-watershed', 'tif')]
-
-    def run(self, flow_dir_ds, outlet_ds):
-        subprocess.call(['gagewatershed',
-                         '-p', flow_dir_ds.loc.path,
-                         '-o', outlet_ds.loc.path,
-                         '-gw', self.locs['gage-watershed'].path])
-
-
-class PeukerDouglasStreamDefinitionOp(Operation):
-    """ Run the TauDEM Peuker Douglas Stream Definition Command """
-
-    title = 'Peuker Douglas Stream Definition'
-    name = 'stream-def-pd'
-    output_types = [
-        OutputType('ssa', 'tif'),
-        OutputType('drop-analysis', 'txt'),
-        OutputType('stream-definition', 'tif')
-    ]
-
-    def run(self, no_sinks_ds, flow_dir_ds, source_area_ds, outlet_ds):
-        # The threshold range should be selected based on the raster size
-        # Something like 10th to 99th percentile of flow accumulation?
-
-        ## This is a three-step process - first compute the D8 source area
-        subprocess.call(['aread8',
-                         '-p', flow_dir_ds.loc.path,
-                         '-o', outlet_ds.loc.path,
-                         '-ad8', self.locs['ssa'].path])
-
-        ## Next perform the drop analysis
-        # This selects a sensible flow accumulation threshold value
-        subprocess.call(['dropanalysis',
-                         '-p', flow_dir_ds.loc.path,
-                         '-fel', no_sinks_ds.loc.path,
-                         '-ad8', source_area_ds.loc.path,
-                         '-o', outlet_ds.loc.path,
-                         '-ssa', self.locs['ssa'].path,
-                         '-drp', self.locs['drop-analysis'].path,
-                         '-par', '5', '2000', '20', '1'])
-
-        ## Finally define the stream
-        # Extract the threshold from the first row with drop statistic t < 2
-        with open(self.locs['drop-analysis'].path, 'r') as drop_file:
-            # Get optimum threshold value from last line
-            for line in drop_file:
-                pass
-            last = line
-            thresh_re = re.compile(r'([\.\d]*)$')
-            threshold = thresh_re.search(last).group(1)
-
-        subprocess.call(['threshold',
-                         '-ssa', self.locs['ssa'].path,
-                         '-thresh', threshold,
-                         '-src', self.locs['stream-definition'].path])
-
-
-
-
-class DinfFlowDirOp(Operation):
-    """ Compute Slope and Aspect from a DEM """
-
-    title = 'D-infinity Flow Direction'
-    name = 'dinf-flow-direction'
-    output_types = [
-        OutputType('slope', 'tif'),
-        OutputType('aspect', 'tif')
-    ]
-
-    def run(self, elevation_ds):
-        subprocess.call(['dinfflowdir',
-                         '-fel', elevation_ds.loc.path,
-                         '-slp', self.locs['slope'].path,
-                         '-ang', self.locs['aspect'].path])
 
 
 class Slope(Operation):
@@ -960,59 +514,6 @@ class SoilDepthOp(Operation):
         soil_depth_ds.array = soil_depth_arr
 
 
-class StreamNetworkOp(Operation):
-    """ Run the TauDEM Stream Reach and Watershed Command """
-
-    title = 'Stream Network'
-    name = 'stream-network'
-    output_types = [
-        OutputType('order', 'tif'),
-        OutputType('tree', 'tsv'),
-        OutputType('coord', 'tsv'),
-        OutputType('network', 'shp'),
-        OutputType('watershed', 'tif')
-    ]
-
-    tree_colnames = [
-        'link_no',
-        'start_coord',
-        'end_coord',
-        'next_link',
-        'previous_link',
-        'order',
-        'monitoring_point_id',
-        'network_magnitude'
-    ]
-
-    coord_colnames = [
-        'x',
-        'y',
-        'distance_to_terminus',
-        'elevation',
-        'contributing_area'
-    ]
-
-    def run(self, no_sinks_ds, flow_dir_ds, source_area_ds,
-            pd_stream_def_ds, outlet_ds):
-
-        subprocess.call([
-            'streamnet',
-            '-p', flow_dir_ds.loc.path,
-            '-fel', no_sinks_ds.loc.path,
-            '-ad8', source_area_ds.loc.path,
-            '-src', pd_stream_def_ds.loc.path,
-            '-o', outlet_ds.loc.path,
-            '-ord', self.locs['order'].path,
-            '-tree', self.locs['tree'].path,
-            '-coord', self.locs['coord'].path,
-            '-net', self.locs['network'].path,
-            '-w', self.locs['watershed'].path])
-        self.locs['tree'].csvargs.update({
-            'delimiter': '\t', 'header': None, 'names': self.tree_colnames})
-        self.locs['coord'].csvargs.update({
-            'delimiter': '\t', 'header': None, 'names': self.coord_colnames})
-
-
 class DHSVMNetworkOp(Operation):
     """ Run the TauDEM Stream Reach and Watershed Command """
 
@@ -1038,8 +539,8 @@ class DHSVMNetworkOp(Operation):
         u'initial_state'
     ]
     map_colnames = [
-        'yind',
         'xind',
+        'yind',
         'channel_id',
         'efflength',
         'effdepth',
@@ -1108,8 +609,8 @@ class DHSVMNetworkOp(Operation):
         channelid_df = pd.DataFrame.from_records(
                 {'x': x.flatten(),
                  'y': y.flatten(),
-                 'xind': inds[0].flatten(),
-                 'yind': inds[1].flatten(),
+                 'xind': inds[1].flatten(),
+                 'yind': inds[0].flatten(),
                  'effdepth': 0.01 * soil_depth_ds.array.flatten(),
                  'efflength': flow_distance_ds.array.flatten(),
                  'channel_id': channelid_arr.flatten()}
@@ -1173,17 +674,21 @@ class DHSVMNetworkOp(Operation):
             'index': False
         }
 
+        logging.info('Writing network file')
         self.locs['network'].csvargs = csvargs
         net_df = net_df[::-1]
         net_df[self.net_colnames].to_csv(self.locs['network'].path, **csvargs)
 
+        logging.info('Writing network map file')
         self.locs['map'].csvargs = csvargs
         map_df[self.map_colnames].to_csv(self.locs['map'].path, **csvargs)
 
+        logging.info('Writing network state file')
         self.locs['state'].csvargs = csvargs
         net_df.sort_values(['order'])[self.state_colnames].to_csv(
                 self.locs['state'].path, **csvargs)
 
+        logging.info('Writing channel class file')
         class_csvargs = {
             'sep': '\t',
             'float_format': '%.2f',
@@ -1199,10 +704,9 @@ class RasterToShapefileOp(Operation):
 
     title = 'Raster to Shapefile'
     name = 'raster-to-shapefile'
-    output_type = 'shapefile'
-    filename_format = '{case_id}_{output_type}'
+    output_types = [OutputType('shapefile', 'shp')]
 
-    def run(self, path, input_ds):
+    def run(self, input_ds):
         # Convert the input raster to 0 and 1 mask
         # (A hack to make up for poor labeling by LabelGages)
         array = input_ds.array
@@ -1210,19 +714,16 @@ class RasterToShapefileOp(Operation):
         array[array!=1] = 0
         input_ds.array = array
 
-        # create the spatial reference, WGS84
-        srs = osr.SpatialReference()
-        srs.ImportFromEPSG(4326)
-
         # Add raster boundary to shapefile
         input_band = input_ds.dataset.GetRasterBand(1)
-        logging.debug(self.path.path)
-        output_ds = BoundaryDataset(self.path, update=True).new()
+        output_ds = BoundaryDataset(self.locs['shapefile'], update=True).new()
         output_layer = output_ds.dataset.CreateLayer(
-            'polygonized_raster', srs = srs)
+            'polygonized_raster', srs = input_ds.srs)
         gdal.Polygonize(input_band, input_band,
                         output_layer, -1, [], callback=None)
-        output_ds = None
+
+        # Clean up
+        output_ds.close()
 
 
 class LatLonToShapefileOp(Operation):
@@ -1451,15 +952,13 @@ class NLCDtoDHSVM(Operation):
         veg_type_ds.array = array
 
 
-class ShadingOp(Operation):
-    """ Compute shadow and skyview files from a DEM """
+class SkyviewOp(Operation):
+    """ Compute skyview files from a DEM """
 
-    title = 'Shading'
-    name = 'shading'
+    title = 'Skyview'
+    name = 'skyview'
     output_types = [
-        OutputType('skyview', 'nc'),
-        OutputType('shadow-hourly', 'nc', 'monthly'),
-        OutputType('shadow', 'nc', 'monthly')
+        OutputType('skyview', 'nc')
     ]
 
     def run(self, elevation_ds, elevation_epsg,
@@ -1467,7 +966,7 @@ class ShadingOp(Operation):
         standard_meridian_srs = osr.SpatialReference()
         standard_meridian_srs.ImportFromEPSG(4326)
         elevation_srs = osr.SpatialReference()
-        elevation_srs.ImportFromEPSG(elevation_epsg)
+        elevation_srs.ImportFromEPSG(int(elevation_epsg[5:]))
         dem_to_latlon = osr.CoordinateTransformation(
             elevation_srs, standard_meridian_srs)
         center = CoordProperty(
@@ -1502,15 +1001,54 @@ class ShadingOp(Operation):
         skyview_output, _ = skyview_process.communicate()
         logging.info(skyview_output)
 
-        # Shadow
-        month = 1
-        for loc in self.locs['shadow-hourly'].locs:
+
+class ShadowOp(Operation):
+    """ Compute shadow and skyview files from a DEM """
+
+    title = 'Monthly Shadow'
+    name = 'shadow'
+    output_types = [
+        OutputType('shadow-hourly', 'nc'),
+        OutputType('shadow', 'nc')
+    ]
+
+    def run(self, elevation_ds, elevation_epsg,
+            time_zone, dt=1, n_directions=8, year=2000):
+        standard_meridian_srs = osr.SpatialReference()
+        standard_meridian_srs.ImportFromEPSG(4326)
+        elevation_srs = osr.SpatialReference()
+        elevation_srs.ImportFromEPSG(int(elevation_epsg[5:]))
+        dem_to_latlon = osr.CoordinateTransformation(
+            elevation_srs, standard_meridian_srs)
+        center = CoordProperty(
+            *dem_to_latlon.TransformPoint(
+                elevation_ds.center.lon, elevation_ds.center.lat)[:-1])
+
+        # Skyview
+        n_rows = str(elevation_ds.size.y)
+        n_cols = str(elevation_ds.size.x)
+        cell_size = str(int(elevation_ds.res.x))
+        longitude = str(center.lon)
+        latitude = str(center.lat)
+        standard_meridian_lon = str(time_zone * 15.0)
+        x_origin = str(elevation_ds.ul.x)
+        y_origin = str(elevation_ds.ul.y)
+        n_directions = str(n_directions)
+        year = str(year)
+        day = '15'
+        steps_per_day = str(int(24 / dt))
+        dt = str(dt)
+
+        for (hourly_loc, _), (monthly_loc, meta) in zip(
+                self.locs['shadow-hourly'], self.locs['shadow']):
+            month = str(meta['month'])
+            # Hourly shadow
             shading_args = [
                 self.scripts['shading'],
-                elevation_ds.loc.path, loc.path,
+                elevation_ds.loc.path, hourly_loc.path,
                 n_rows, n_cols, cell_size,
                 longitude, latitude, standard_meridian_lon,
-                year, str(month), day, dt,
+                year, month, day, dt,
                 x_origin, y_origin
             ]
             logging.info('Calling process %s', ' '.join(shading_args))
@@ -1521,11 +1059,12 @@ class ShadingOp(Operation):
             shading_output, _ = shading_process.communicate()
             logging.info(shading_output)
 
+            # Monthly average
             average_args = [
                 self.scripts['average'],
-                loc.path, self.locs['shadow'].locs[month-1].path,
+                hourly_loc.path, monthly_loc.path,
                 '24', steps_per_day, n_rows, n_cols, cell_size,
-                x_origin, y_origin, str(month)
+                x_origin, y_origin, month
             ]
             logging.info('Calling process %s', ' '.join(average_args))
             average_process = subprocess.Popen(
@@ -1534,7 +1073,6 @@ class ShadingOp(Operation):
                 stderr=subprocess.STDOUT)
             average_output, _ = average_process.communicate()
             logging.info(average_output)
-            month += 1
 
 
 class AverageLayers(Operation):
@@ -1551,11 +1089,11 @@ class AverageLayers(Operation):
         weights = [d / sum(diff) for d in diff]
 
         average = 0 * np.ones(layered_ds[0].array.shape)
-        for loc, ds, weight in zip(
-                self.locs['average'].locs, layered_ds, weights):
-            average += ds.array * weight
-            average_ds = GDALDataset(loc, template=layered_ds[0])
-            average_ds.array = average
+        for layer, weight in zip(layered_ds, weights):
+            average += layer.array * weight
+
+        average_ds = GDALDataset(self.locs['average'], template=layered_ds[0])
+        average_ds.array = average
 
 
 class SoilType(Operation):
@@ -1619,18 +1157,158 @@ class SoilType(Operation):
         texture_ds.array = t
 
 
+class DHSVMStationOp(Operation):
+    """ Extract station data from NLDAS """
+
+    title = 'DHSVM Station File'
+    name = 'dhsvm-station'
+    output_types = [OutputType('station', 'tsv')]
+    columns = [
+        'air_temp',
+        'wind_speed',
+        'relative_humidity',
+        'incoming_shortwave',
+        'incoming_longwave',
+        'precipitation'
+    ]
+    vars = {
+        'air_temp': 'tmp2m',
+        'wind_speed_u': 'ugrd10m',
+        'wind_speed_v': 'vgrd10m',
+        'specific_humidity': 'spfh2m',
+        'pressure': 'pressfc',
+        'incoming_shortwave': 'dswrfsfc',
+        'incoming_longwave': 'dlwrfsfc',
+        'precipitation': 'apcpsfc'
+    }
+    cfg_template = """
+        Station Name {i}     = Station{i}
+        North Coordinate {i} = {y}
+        East Coordinate {i}  = {x}
+        Elevation {i}        = {elevation}
+        Station File {i}     = input/station/Station{i}.tsv
+    """
+
+
+    def run(self, start, end, dt, time_zone,
+            nldas_ds, elevation_ds, projected_epsg, precip_adj):
+        station_ds = []
+
+        time = nldas_ds.dataset.variables['time']
+        start_i = nc4.date2index(start, time) - time_zone
+        end_i = nc4.date2index(end, time) - time_zone
+        datetimes = pd.date_range(start, end, freq=dt, closed='left')
+
+        records = []
+        j = 1
+        for i, coord in enumerate(nldas_ds.coords):
+            x = np.floor(
+                (coord.x - nldas_ds.cmin.x) / nldas_ds.res.x
+                ).astype(int)
+            y = np.floor(
+                (coord.y - nldas_ds.cmin.y) / nldas_ds.res.y
+                ).astype(int)
+
+            nldas_srs = osr.SpatialReference()
+            nldas_srs.ImportFromEPSG(4326)
+            proj_srs = osr.SpatialReference()
+            proj_srs.ImportFromEPSG(int(projected_epsg[5:]))
+            nldas_to_proj = osr.CoordinateTransformation(
+                nldas_srs, proj_srs)
+            station_proj = CoordProperty(
+                *nldas_to_proj.TransformPoint(
+                    coord.x, coord.y)[:-1])
+
+            if elevation_ds.bbox.contains(station_proj):
+                record = {'i': j,
+                          'xi': x, 'yi': y,
+                          'x': station_proj.x, 'y': station_proj.y,
+                          'elevation': elevation_ds.get_value(station_proj)}
+                records.append(record)
+                j += 1
+
+        csvargs = {
+            'sep': '\t',
+            'float_format': '%.5f',
+            'header': False,
+            'index_label': 'datetime',
+            'date_format': '%m/%d/%Y-%H',
+            'columns': self.columns
+        }
+
+        self.locs['station'] = ListLoc(
+            template=self.locs['station'],
+            id={'xi': 'xi', 'yi': 'yi'},
+            meta=records
+        ).configure(self.cfg)
+
+        for loc, meta in self.locs['station']:
+            ds = DataFrameDataset(loc).new(
+                index = datetimes,
+                columns = [
+                    'air_temp',
+                    'wind_speed_u',
+                    'wind_speed_v',
+                    'wind_speed',
+                    'specific_humidity',
+                    'pressure',
+                    'vapor_pressure',
+                    'sat_vapor_pressure',
+                    'relative_humidity',
+                    'incoming_shortwave',
+                    'incoming_longwave',
+                    'precipitation'
+                ]
+            )
+
+            ds.csvargs = csvargs
+            df = ds.dataset
+            for name, id in self.vars.items():
+                slice = []
+                for dim in nldas_ds.dataset[id].dimensions:
+                    if dim == 'time':
+                        slice.append('{start_i}:{end_i}'.format(
+                            start_i=start_i, end_i=end_i))
+                    elif dim == nldas_ds.xdim:
+                        slice.append(str(meta['xi']))
+                    elif dim == nldas_ds.ydim:
+                        slice.append(str(meta['yi']))
+                expr = "nldas_ds.dataset['{id}'][{slice}]".format(
+                    id=id, slice=','.join(slice))
+                logging.debug(expr)
+                col = eval(expr)
+                df[name] = eval(expr)
+
+            # mm/hour to m/hour
+            df['precipitation'] = df['precipitation'] / 1000. * precip_adj
+            df['wind_speed'] = np.sqrt(
+                df['wind_speed_u']**2 + df['wind_speed_v']**2 )
+            df['air_temp'] = df['air_temp'] - 273.15
+            df['relative_humidity'] = (
+                df.apply(
+                    lambda row:
+                        (100 * relative_humidity_from_specific_humidity(
+                            row['specific_humidity'],
+                            row['air_temp'] * units.degC,
+                            row['pressure'] * units.pascal).magnitude),
+                    axis=1 ))
+            df.loc[df.relative_humidity >= 100, 'relative_humidity'] = 100
+            ds.save()
+
+
 class WriteOneVarNetCDFOp(Operation):
     """ Write datasets to a netcdf file """
 
     title = 'Write NetCDF'
     name = NotImplemented
     output_types = [OutputType('netcdf', 'nc')]
+    varname = NotImplemented
     dtype = NotImplemented
     units = NotImplemented
     nc_format='NETCDF4_CLASSIC'
     fill = NotImplemented
 
-    def run(self, input_ds):
+    def run(self, input_ds, uniform_value=False):
         ncfile = nc4.Dataset(
                 self.locs['netcdf'].path, 'w', format=self.nc_format)
         ncfile.history = 'Created using lsmutils {}'.format(
@@ -1639,6 +1317,9 @@ class WriteOneVarNetCDFOp(Operation):
         array = input_ds.array
         nodata = input_ds.nodata
         array[array==nodata] = self.fill
+
+        if uniform_value:
+            array[:] = uniform_value
 
         # Add dimensions
         t_dim = ncfile.createDimension("time", None)
@@ -1711,3 +1392,108 @@ class SoilTypeForDHSVM(WriteOneVarNetCDFOp):
     dtype = 'i1'
     units = 'Soil Type'
     fill = -99
+
+class PRISMForDHSVM(WriteOneVarNetCDFOp):
+
+    name = 'dhsvm-prism'
+    varname = 'PRISM.Precip'
+    dtype = 'f'
+    units = 'mm*100'
+    fill = -99
+
+
+class WriteUniformNetCDFOp(Operation):
+    """ Write datasets to a netcdf file """
+
+    title = 'Write Uniform NetCDF'
+    name = NotImplemented
+    output_types = [OutputType('netcdf', 'nc')]
+    varnames = NotImplemented
+    layers = NotImplemented
+    dtypes = NotImplemented
+    units = NotImplemented
+    nc_format='NETCDF4_CLASSIC'
+    fills = NotImplemented
+
+    def run(self, template_ds):
+        ncfile = nc4.Dataset(
+                self.locs['netcdf'].path, 'w', format=self.nc_format)
+        ncfile.history = 'Created using lsmutils {}'.format(
+                datetime.datetime.now())
+
+        # Add dimensions
+        t_dim = ncfile.createDimension("time", None)
+        t_var = ncfile.createVariable("time", "f8", ("time",))
+        t_var.units = 'time'
+        t_var[:] = np.array([0])
+
+        lons = template_ds.cgrid.lon
+        lon_dim = ncfile.createDimension("x", len(lons))
+        lon_var = ncfile.createVariable("x", "f8", ("x",))
+        lon_var.standard_name = 'projection_x_coordinate'
+        lon_var.units = 'Meters'
+        lon_var[:] = lons
+
+        lats = template_ds.cgrid.lat
+        lat_dim = ncfile.createDimension("y", len(lats))
+        lat_var = ncfile.createVariable("y", "f8", ("y",))
+        lat_var.standard_name = 'projection_y_coordinate'
+        lat_var.units = 'Meters'
+        lat_var[:] = lats
+
+        # Add variables
+        for name, layers, dtype, units, fill in zip(
+            self.varnames, self.layers, self.dtypes, self.units, self.fills):
+            for layer in range(layers):
+                varname = name.format(layer=layer) if 'layer' in name else name
+                ncvar = ncfile.createVariable(
+                        varname, dtype, ('time', 'y', 'x'))
+                ncvar.units = units
+                ncvar[:,:] = np.expand_dims(
+                    np.ones((template_ds.size.x, template_ds.size.y))*fill,
+                    axis=0)
+
+        ncfile.close()
+
+class InterceptionStateForDHSVM(WriteUniformNetCDFOp):
+
+    name = 'dhsvm-interception-state'
+    varnames = [
+        '{layer}.Precip.IntRain',
+        '{layer}.Precip.IntSnow',
+        'Temp.Instor']
+    layers = [2, 2, 1]
+    dtypes = ['f', 'f', 'f']
+    units = ['m', 'm', 'm']
+    fills = [0, 0, 0]
+
+class SnowStateForDHSVM(WriteUniformNetCDFOp):
+
+    name = 'dhsvm-snow-state'
+    varnames = [
+        'Snow.HasSnow',
+        'Snow.LastSnow',
+        'Snow.Swq',
+        'Snow.PackWater',
+        'Snow.TPack',
+        'Snow.SurfWater',
+        'Snow.TSurf',
+        'Snow.ColdContent']
+    layers = [1, 1, 1, 1, 1, 1, 1, 1]
+    dtypes = ['f', 'f', 'f', 'f', 'f', 'f', 'f', 'f']
+    units = ['boolean', 'days', 'm', 'm', 'degrees C', 'm', 'degrees C', 'J']
+    fills = [0, 200, 0, 0, 0, 0, 0, 0]
+
+class SoilStateForDHSVM(WriteUniformNetCDFOp):
+
+    name = 'dhsvm-soil-state'
+    varnames = [
+        '{layer}.Soil.Moist',
+        'Soil.TSurf',
+        '{layer}.Soil.Temp',
+        'Soil.Qst',
+        'Soil.Runoff']
+    layers = [4, 1, 4, 1, 1]
+    dtypes = ['f', 'f', 'f', 'f', 'f']
+    units = ['fraction', 'degrees C', 'degrees C', 'J', 'm']
+    fills = [0.1, 0, 0, 0, 0]

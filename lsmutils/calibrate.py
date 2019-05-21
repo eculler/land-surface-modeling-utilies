@@ -103,7 +103,7 @@ class CaseDirStructure(yaml.YAMLObject):
         env.pop('in')
         env.pop('scripts')
         env.pop('cases')
-        env.pop('operations')
+        env.pop('sequence')
         env.pop('structure')
         # Configure locators
         # Add output files
@@ -112,6 +112,7 @@ class CaseDirStructure(yaml.YAMLObject):
                 env, file_id=key, dirname=os.path.join(*loc))
             for key, loc in self.output_files.items()
         }
+
         self.locs.update(self.output_files)
         # Add input files
         self.locs.update({
@@ -139,7 +140,7 @@ class CaseDirStructure(yaml.YAMLObject):
         # Report input and output files
         for key, loc in self.locs.items():
             filetype = 'Output' if key in self.output_files else 'Input'
-            logging.info('%s file %s located at %s', filetype, key, loc.path)
+            logging.info('%s file %s located at:\n    %s', filetype, key, loc)
 
         return self
 

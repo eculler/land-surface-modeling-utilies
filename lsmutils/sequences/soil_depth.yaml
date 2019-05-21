@@ -1,4 +1,5 @@
 !OpSequence
+name: soil-depth
 title: Soil Depth
 doc: Estimates soil depth from slope, elevation, and source area.
 operations:
