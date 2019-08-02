@@ -1,8 +1,10 @@
+import geopandas as gpd
 import logging
 from osgeo import gdal, gdal_array, ogr, osr
 import netCDF4 as nc4
 import numpy as np
 import pandas as pd
+import shapely
 
 from math import ceil, floor
 
@@ -13,6 +15,7 @@ class Dataset(object):
     def __init__(self, loc):
         self.loc = loc
         self.meta = {}
+
 
 class DataFrameDataset(Dataset):
 
@@ -35,8 +38,14 @@ class DataFrameDataset(Dataset):
     @property
     def dataset(self):
         if self._dataset is None:
-            self._dataset = pd.read_csv(self.loc.path, **self.csvargs)
+            self._dataset = self.load_dataframe()
         return self._dataset
+
+    def load_dataframe(self):
+        if self.filetypes[self.filetype] == 'csv':
+            return pd.read_csv(self.loc.path, **self.csvargs)
+        else:
+            raise ValueError('Unsupported file type: {}'.format(self.filetype))
 
     def save(self):
         self.saveas(self.filetype)
@@ -44,6 +53,55 @@ class DataFrameDataset(Dataset):
     def saveas(self, filetype, datatype=None):
         if self.filetypes[filetype] == 'csv':
             self.dataset.to_csv(self.loc.path, **self.csvargs)
+
+
+class GeoDataFrameDataset(DataFrameDataset):
+    """
+    Tabular data with coordinates or shapes
+    """
+
+    filetypes = {
+        'csv': 'csv',
+        'tsv': 'tsv'
+    }
+
+    def __init__(self, loc, filetype='csv',
+                 geometry_col=None, xy_cols=None, bbox=None):
+        super().__init__()
+        self.geometry_col = geometry_col
+        self.xy_cols = xy_cols
+        self.bbox = bbox
+
+    @property
+    def dataset(self):
+        """ Load data as a geopandas GeoDataFrame """
+
+        if self._dataset is None:
+            self._dataset = self.load_dataframe(self)
+
+        if not hasattr(self, 'geometry'):
+            if self.geometry_col:
+                self._dataset[self.geometry_col] = (
+                    self._dataset[self.geometry_col].apply(shapely.wkt.loads))
+                self._dataset = gpd.GeoDataFrame(
+                    self._dataset, geometry=self.geometry_col)
+            elif self.xy_cols:
+                self._dataset = gpd.GeoDataFrame(
+                    self._dataset,
+                    geometry=gpd.points_from_xy(
+                        self._dataset[self.xy_cols[0]],
+                        self._dataset[self.xy_cols[1]])
+                )
+
+        if self.bbox:
+            self._dataset = self._dataset.cx[
+                bbox.min.x:bbox.max.y, bbox.min.x:bbox.max.y]
+
+        return self._dataset
+
+    def crop(self, bbox):
+        self.bbox = bbox
+
 
 class SpatialDataset():
 

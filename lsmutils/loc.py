@@ -95,7 +95,10 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
             self.dirname = os.path.join(self.base_dir, self.dirname)
 
         # Render url
-        self.url = self.url.format(**self.env)
+        try:
+            self.url = self.url.format(**self.env)
+        except:
+            pass
 
         # Create directory if it does not exist
         if not os.path.exists(self.dirname):
@@ -377,6 +380,27 @@ class MonthlyLoc(LocatorCollection):
                 'month_name': calendar.month_name[month],
                 'month_abbr': calendar.month_abbr[month]
             }
+            records.append(record)
+            self.locs.append(Locator(**self.info, **record, **env))
+        self.meta = pd.DataFrame.from_records(records, index='i')
+
+class YearlyLoc(LocatorCollection):
+
+    yaml_tag = '!Yearly'
+    loc_type = 'yearly'
+    cols = ['year']
+    id = {'year': '{year}'}
+
+    def expand(self, start, end, **env):
+        self.locs = []
+        records = []
+
+        for i, year in enumerate(range(start, end+1)):
+            record = {
+                'i': i,
+                'year': year
+            }
+            print(record)
             records.append(record)
             self.locs.append(Locator(**self.info, **record, **env))
         self.meta = pd.DataFrame.from_records(records, index='i')
