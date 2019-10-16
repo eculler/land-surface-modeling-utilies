@@ -125,7 +125,6 @@ class OperationSequence(yaml.YAMLObject):
 
         for op in self.operations:
             inpt_data = copy.deepcopy(op.inpt)
-            print(inpt_data)
 
             # Get hardcoded data from the case
             inpt_data.update({
@@ -133,8 +132,8 @@ class OperationSequence(yaml.YAMLObject):
                 for key, value in inpt_data.items()
                 if str(value) in case.dir_structure.data
             })
-            print(inpt_data)
-            print(case.dir_structure.data)
+
+            # Apply configured file names
 
             if inpt_data:
                 logging.debug('Input files located at:')
@@ -144,10 +143,10 @@ class OperationSequence(yaml.YAMLObject):
 
             # Run operation
             output_locs = op.configure(
-                    case.cfg,
-                    locs=case.dir_structure.output_files,
-                    scripts=case.dir_structure.scripts,
-                    **inpt_data).save()
+                case.cfg,
+                locs=case.dir_structure.output_files,
+                scripts=case.dir_structure.scripts,
+                **inpt_data).save()
 
             logging.debug('Output files saved to:')
             for key, loc in output_locs.items():
@@ -166,7 +165,6 @@ class OperationSequence(yaml.YAMLObject):
                     logging.debug('    %s\n    %s', key, ds.loc)
 
             case.dir_structure.update(new_locs)
-            print(case.dir_structure.data)
 
         return case
 

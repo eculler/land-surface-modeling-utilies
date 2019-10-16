@@ -11,17 +11,28 @@ from lsmutils.dataset import BoundaryDataset
 from lsmutils.operation import Operation, OutputType
 from lsmutils.utils import CoordProperty, BBox
 
+class ConvertFileType(Operation):
 
-class MergeOp(Operation):
+    title = 'Convert Filetype'
+    name = 'convert-filetype'
+    output_types = [OutputType('converted', '')]
 
-    title = 'Merged Raster'
-    name = 'merge'
+    def run(self, input_ds, filetype):
+        self.locs['converted'].default_ext = filetype
+        gdal.Translate(self.locs['converted'].path,
+                       input_ds.dataset,
+                       format=input_ds.filetypes[filetype])
+
+
+class MosaicOp(Operation):
+
+    title = 'Mosaic Rasters with gdal_merge'
+    name = 'mosaic'
     output_types = [OutputType('merged', 'tif')]
 
     def run(self, input_ds):
         if not hasattr(input_ds, '__iter__'):
             input_ds = [input_ds]
-
         merge_args = [
             'gdal_merge.py',
             '-o', self.locs['merged'].path,
@@ -35,6 +46,27 @@ class MergeOp(Operation):
         merge_output, _ = merge_process.communicate()
         logging.info(merge_output)
 
+class MergeOp(Operation):
+
+    title = 'Merge rasters into a virtual raster'
+    name = 'merge'
+    output_types = [OutputType('merged', 'vrt')]
+
+    def run(self, input_ds):
+        if not hasattr(input_ds, '__iter__'):
+            input_ds = [input_ds]
+        vrt_args = [
+            'gdalbuildvrt',
+            self.locs['merged'].path,
+            *[ds.loc.path for ds in input_ds]
+        ]
+        logging.info('Calling process %s', ' '.join(vrt_args))
+        vrt_process = subprocess.Popen(
+            vrt_args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT)
+        vrt_output, _ = vrt_process.communicate()
+        logging.info(vrt_output)
 
 class MatchRasterOp(Operation):
 
@@ -43,7 +75,6 @@ class MatchRasterOp(Operation):
     output_types = [OutputType('matched', 'gtif')]
 
     def run(self, input_ds, template_ds=None, algorithm='bilinear'):
-        print(template_ds.warp_output_bounds)
         agg_warp_options = gdal.WarpOptions(
             outputBounds = template_ds.rev_warp_output_bounds,
             width = template_ds.size.x,
@@ -157,7 +188,7 @@ class ReprojectRasterOp(Operation):
 
     title = 'Reproject raster'
     name = 'reproject-raster'
-    output_types = [OutputType('reprojected', 'gtif')]
+    output_types = [OutputType('reprojected', 'tif')]
 
     def run(self, input_ds, template_ds=None, srs=None, algorithm='bilinear'):
         if template_ds:
@@ -169,7 +200,6 @@ class ReprojectRasterOp(Operation):
             self.locs['reprojected'].path,
             input_ds.dataset,
             options=agg_warp_options)
-
 
 class ReprojectVectorOp(Operation):
 

@@ -311,7 +311,14 @@ class GDALDataset(SpatialDataset):
         'asc': 'AAIGrid',
         'gtif': 'GTiff',
         'tif': 'GTiff',
-        'hgt': 'SRTMHGT'
+        'hgt': 'SRTMHGT',
+        'hdf': 'HDF5',
+        'vrt': 'VRT'
+    }
+
+    prefixes = {
+        'nc': 'NETCDF',
+        'hdf': 'HDF4_EOS:EOS_GRID'
     }
 
     def __init__(self, loc, template=None, filetype='gtif'):
@@ -352,6 +359,7 @@ class GDALDataset(SpatialDataset):
             driver = gdal.GetDriverByName(self.filetypes[filetype])
             self._dataset = driver.CreateCopy(loc.path, template.dataset)
 
+
     @property
     def dataset(self):
         gdal_path = 'unknown file'
@@ -362,9 +370,10 @@ class GDALDataset(SpatialDataset):
             elif not self.loc.variable:
                 gdal_path = self.loc.path
             else:
-                gdal_path = 'NETCDF:{path}:{variable}'.format(
-                        path = self.loc.path,
-                        variable = self.loc.variable)
+                gdal_path = '{filetype}:{path}:{variable}'.format(
+                    filetype = self.prefixes[self.filetype],
+                    path = self.loc.path,
+                    variable = self.loc.variable)
             self._dataset = gdal.Open(gdal_path, self.mod)
 
         if not self._dataset:
@@ -433,7 +442,10 @@ class GDALDataset(SpatialDataset):
     @property
     def datatype(self):
         if not self._datatype:
-            self._datatype=self.dataset.GetRasterBand(1).DataType
+            try:
+                self._datatype=self.dataset.GetRasterBand(1).DataType
+            except AttributeError:
+                self._datatype=None
         return self._datatype
 
     @property

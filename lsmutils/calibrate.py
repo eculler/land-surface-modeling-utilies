@@ -95,7 +95,6 @@ class CaseDirStructure(yaml.YAMLObject):
                 next_layer += [
                     Directory(directory.path + [key], value)
                     for key, value in directory.contents.items()]
-
             layer = next_layer
 
     def configure(self, cfg):
@@ -105,6 +104,7 @@ class CaseDirStructure(yaml.YAMLObject):
         env.pop('cases')
         env.pop('sequence')
         env.pop('structure')
+
         # Configure locators
         # Add output files
         self.output_files = {
@@ -112,8 +112,8 @@ class CaseDirStructure(yaml.YAMLObject):
                 env, file_id=key, dirname=os.path.join(*loc))
             for key, loc in self.output_files.items()
         }
-
         self.locs.update(self.output_files)
+
         # Add input files
         self.locs.update({
             key: path.configure(env, file_id=key)

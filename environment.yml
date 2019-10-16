@@ -1,0 +1,10 @@
+name: lsmutils
+channels:
+  - conda-forge
+dependencies:
+  - gdal
+  - landlab
+  - geos
+  - matplotlib
+  - metpy
+  - geopandas

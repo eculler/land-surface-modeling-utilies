@@ -9,6 +9,7 @@ import logging
 import netCDF4 as nc4
 from metpy.calc import relative_humidity_from_specific_humidity
 from metpy.units import units
+import multiprocessing
 import numpy as np
 import ogr
 import os
@@ -96,8 +97,8 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         logging.debug('Formatting %s file names', self.name)
         self.filenames = {
             ot.key: self.filename_format.format(
-                    output_label=self.get_label(ot.key),
-                    **self.attributes)
+                output_label=self.get_label(ot.key),
+                **self.attributes)
             for ot in self.output_types}
 
         logging.debug('Resolving %s locs', self.name)
@@ -109,34 +110,45 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                 for ot in self.output_types}
         else:
             env = {}
+            meta = None
             for loc in self.kwargs.values():
                 if hasattr(loc, 'env'):
-                    print(loc.env)
                     env.update(loc.env)
-            env['dimensions'] = self.dims.copy()
-            self.locs = {
-                ot.key: ComboLocatorCollection(
-                    filename=self.filenames[ot.key],
-                    default_ext=ot.filetype,
-                    **copy.deepcopy(env)
-                    ).configure(cfg)
-                for ot in self.output_types
-            }
+                if hasattr(loc, 'loc_type'):
+                    if loc.loc_type in ['regex', 'list']:
+                        env.update({'meta': loc.meta.to_dict('records')})
 
-        # File paths under the local key, not the parent key
-        ## Is this necessary?
-        alt_locs = {}
+            if 'meta' in env:
+                self.locs = {
+                    ot.key: ListLoc(
+                        filename=self.filenames[ot.key],
+                        default_ext=ot.filetype,
+                        **copy.deepcopy(env)
+                        ).configure(cfg, file_id=ot.key)
+                    for ot in self.output_types
+                }
+                # Group by dimensions and reduce
+                for loc in self.locs.values():
+                    loc.reduce(self.dims)
+            else:
+                env.update({'dimensions': self.dims.copy()})
+                self.locs = {
+                    ot.key: ComboLocatorCollection(
+                        filename=self.filenames[ot.key],
+                        default_ext=ot.filetype,
+                        **copy.deepcopy(env)
+                        ).configure(cfg)
+                    for ot in self.output_types
+                }
+
+        # Save files in configured location, not default
         for key, label in self.out.items():
             if label in locs:
-                if not locs[label].default_ext:
-                    for ot in [ot for ot in self.output_types if key == ot.key]:
-                        # Substitute file extensions from output type
-                        locs[label].default_ext = ot.filetype
-                        alt_locs[key] = locs.pop(label)
-        self.locs.update(alt_locs)
+                self.locs[key].filename = locs[label].filename
+                self.locs[key].dirname = locs[label].dirname
 
         for key, loc in self.locs.items():
-            logging.debug('%s path at %s', key, loc.path)
+            logging.debug('%s path at %s', key, loc)
 
         # Initialize variables
         self.datasets = []
@@ -157,6 +169,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                 self.inpt[pykey] = new_labels[dsname]
                 logging.debug(
                     'Relabelled input %s to %s', dsname, new_labels[dsname])
+
         for pykey, dsname in self.out.items():
             if str(dsname) in new_labels:
                 self.out[pykey] = new_labels[dsname]
@@ -177,37 +190,26 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         # Perform raster operation
         dim_values = None
         if self.dims:
-            # This is sloppy
-            # it relies on only a single locator collection
-            locs = copy.copy(self.locs)
+            self.full_locs = copy.copy(self.locs)
+            self.full_locs.update(self.kwargs)
 
             # Get parameter combinations from locator collections
-            for loc in self.kwargs.values():
+            for key, loc in self.full_locs.items():
                 if hasattr(loc, 'cols'):
-                    dim_values = loc.get_dim_values(self.dims)
+                    loc_dim_values = loc.get_dim_values(self.dims)
+                    if not dim_values is None:
+                        dim_values = dim_values.join(
+                            loc_dim_values, lsuffix='.copy')
+                    else:
+                        dim_values = loc_dim_values
 
         if not dim_values is None:
-            # Run operation for each combination
-            i = 0
-            for row in dim_values.to_dict('records'):
-                kwargs = copy.copy(self.kwargs)
-                for key, loc in kwargs.items():
-                    if hasattr(loc, 'file_id'):
-                        ds_name = loc.file_id
-                        if ds_name in row:
-                            kwargs[key] = loc.get_subset(row[ds_name])
+            # Run operation for each combination in parallel
+            pool = multiprocessing.Pool()
+            pool.map(self.run_subset, dim_values.to_dict('records'))
 
-                for key, loc in self.locs.items():
-                    if hasattr(loc, 'locs'):
-                        self.locs[key] = loc.get_subset([i])
-                kwargs.update({
-                    key: loc.dataset for key, loc in kwargs.items()
-                    if hasattr(loc, 'dataset')})
-
-                self.run(**kwargs)
-                self.locs = copy.copy(locs)
-                i += 1
         else:
+            # Run single operation with no dimensions
             kwargs = copy.copy(self.kwargs)
             kwargs.update({
                 key: loc.dataset for key, loc in kwargs.items()
@@ -219,6 +221,34 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             logging.info(self.end_msg.format(title=self.title, loc=loc))
 
         return self.locs
+
+    def run_subset(self, dim_row):
+        subset_kwargs = copy.copy(self.kwargs)
+
+        # Subset locators
+        for key, loc in self.full_locs.items():
+            if hasattr(loc, 'file_id'):
+                ds_name = loc.file_id
+                if ds_name in dim_row:
+                    if key in self.kwargs:
+                        subset_kwargs[key] = loc.get_subset(dim_row[ds_name])
+                    else:
+                        self.locs[key] = loc.get_subset(dim_row[ds_name])
+
+        # Replace dataset locators with datasets
+        subset_kwargs.update({
+            key: loc.dataset for key, loc in subset_kwargs.items()
+            if hasattr(loc, 'dataset')})
+
+        self.run(**subset_kwargs)
+
+        # Restore locators
+        self.locs = copy.copy(self.full_locs)
+
+        # Remove datasets from memory
+        for loc in subset_kwargs.values():
+            del loc
+
 
 class SumOp(Operation):
 
