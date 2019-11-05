@@ -190,12 +190,15 @@ class ReprojectRasterOp(Operation):
     name = 'reproject-raster'
     output_types = [OutputType('reprojected', 'tif')]
 
-    def run(self, input_ds, template_ds=None, srs=None, algorithm='bilinear'):
+    def run(self, input_ds, template_ds=None,
+            srs=None, algorithm='bilinear',
+            extent=None):
         if template_ds:
             srs = template_ds.srs
         agg_warp_options = gdal.WarpOptions(
             dstSRS = srs,
-            resampleAlg=algorithm)
+            resampleAlg=algorithm,
+            outputBounds=extent)
         gdal.Warp(
             self.locs['reprojected'].path,
             input_ds.dataset,
