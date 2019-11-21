@@ -134,10 +134,11 @@ class OperationSequence(yaml.YAMLObject):
             })
 
             # Apply configured file names
-
             if inpt_data:
                 logging.debug('Input files located at:')
                 for key, loc in inpt_data.items():
+                    if hasattr(loc, 'file_id'):
+                        loc.remove_missing()
                     if hasattr(loc, 'path'):
                         logging.debug('    %s\n    %s', key, loc)
 
@@ -169,7 +170,7 @@ class OperationSequence(yaml.YAMLObject):
         return case
 
 def run_cfg(cfg):
-    #logging.debug('Loaded configuration \n%s', yaml.dump(cfg))
+    logging.debug('Loaded configuration \n%s', yaml.dump(cfg))
 
     collection = CaseCollection(cfg)
     cases = collection.cases
@@ -197,6 +198,9 @@ def run_cfg(cfg):
 
     # Clean up
     if cfg['log_level'] > logging.DEBUG:
-        shutil.rmtree(tmp_path)
+        try:
+            shutil.rmtree(tmp_path)
+        except:
+            pass
 
     return case

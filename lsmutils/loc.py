@@ -80,7 +80,6 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
         self.url = url
         self.csvargs = csvargs
         self.omit_ext = omit_ext
-
         self._dataset = None
 
     def configure(self, cfg, file_id='', dirname=''):
@@ -93,8 +92,9 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
         else:
             self.base_dir = os.getcwd()
 
-        # Render url
+        # Render
         try:
+            self.filename = self.filename.format(**self.env)
             self.url = self.url.format(**self.env)
         except:
             pass
@@ -105,10 +105,14 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
 
         return self
 
+    def remove_missing(self):
+        if not self.exists:
+            raise ValueError('File {} is missing'.format(self.path))
+
     @property
     def filename(self):
         if not self._filename:
-            self.filename = self._filename_fmt
+            self._filename = self._filename_fmt
         return self._filename
 
     @filename.setter
@@ -287,11 +291,13 @@ class LocatorCollection(Locator):
         self.i = 0
         self.meta = pd.DataFrame()
         self.locs = []
+        self.dims = [self.loc_type]
 
         try:
             self.expand(**env)
         except TypeError:
             logging.warning('Required locator metadata missing: %s', self.id)
+
 
     @classmethod
     def from_yaml(cls, loader, node):
@@ -301,10 +307,20 @@ class LocatorCollection(Locator):
     def configure(self, cfg, file_id='', dirname='', dims=[]):
         self.file_id = file_id if file_id else self.file_id
         self.dirname = dirname if dirname else self.dirname
+        self.meta[self.file_id] = self.meta.index
         for loc in self.locs:
             loc.configure(cfg, file_id, dirname)
-        self.meta[self.file_id] = self.meta.index
         return self
+
+    def remove_missing(self):
+        missing = []
+        for i in self.meta.index:
+            loc = self.locs[i]
+            if not loc.exists:
+                missing.append(i)
+        self.locs = [loc for i, loc in enumerate(self.locs) if not i in missing]
+        self.meta = self.meta.drop(index=missing).reset_index(drop=True)
+        self.meta[self.file_id] = self.meta.index
 
     @property
     def isfile(self):
@@ -369,6 +385,7 @@ class LocatorCollection(Locator):
 
     def get_subset(self, indices):
         subset = copy.copy(self)
+        print(indices)
         subset.locs = [self.locs[i] for i in indices]
         subset.meta = self.meta.iloc[indices, :]
         return subset
@@ -541,7 +558,6 @@ class TileLoc(LocatorCollection):
     }
 
     def expand(self, bbox=None, **env):
-
         self.locs = []
         records = []
 
@@ -550,23 +566,27 @@ class TileLoc(LocatorCollection):
         min_lat = floor(bbox.min.lat)
         max_lat = ceil(bbox.max.lat)
 
-        for i, (lon, lat) in enumerate(zip(
-                range(int(min_lon), int(max_lon)),
-                range(int(min_lat), int(max_lat)))):
-            record = {
-                'i': i,
-                'min_lon': min_lon,
-                'min_lat': min_lat,
-                'max_lon': min_lon + 1,
-                'max_lat': min_lat + 1,
-                'cardinal_lon': 'E' if min_lon >= 0 else 'W',
-                'cardinal_lat': 'N' if min_lat >= 0 else 'S',
-                'abs_min_lon': abs(min_lon),
-                'abs_min_lat': abs(min_lat)
-            }
-            records.append(record.copy())
-            self.locs.append(Locator(**self.info, **record, **env))
+        i = 0
+        for lon in range(int(min_lon), int(max_lon)):
+            for lat in range(int(min_lat), int(max_lat)):
+                record = {
+                    'i': i,
+                    'min_lon': lon,
+                    'min_lat': lat,
+                    'max_lon': lon + 1,
+                    'max_lat': lat + 1,
+                    'cardinal_lon': 'E' if lon >= 0 else 'W',
+                    'cardinal_lat': 'N' if lat >= 0 else 'S',
+                    'abs_min_lon': abs(lon),
+                    'abs_min_lat': abs(lat)
+                }
+                records.append(record.copy())
+                self.locs.append(Locator(**self.info, **record, **env))
+                i += 1
+
         self.meta = pd.DataFrame.from_records(records, index='i')
+        self.filename = self._filename_fmt
+
 
 class LayeredLoc(LocatorCollection):
 
@@ -634,7 +654,7 @@ class RegexLocatorCollection(LocatorCollection):
             raise ValueError('No files match regex {}'.format(filename_re))
 
         self.meta = pd.DataFrame.from_records(records, index='i')
-        grouped = self.meta.groupby(*dimensions)
+        grouped = self.meta.groupby(dimensions)
         self.locs = []
         dim_meta = []
         for name, group in grouped:
@@ -644,7 +664,7 @@ class RegexLocatorCollection(LocatorCollection):
             dim_meta.append(listloc.meta)
 
         self.meta = pd.concat(dim_meta, ignore_index=True)
-        self.filename
+        self.filename = self._filename_fmt
 
 
 class ComboLocatorCollection(LocatorCollection):
@@ -664,7 +684,6 @@ class ComboLocatorCollection(LocatorCollection):
             new_meta = []
             loc_cls = Locator.__children__()[dimensions.pop(0)]
 
-
             records = (
                 [{}] if (self.meta is None)
                 else self.meta.to_dict('records')
@@ -672,7 +691,8 @@ class ComboLocatorCollection(LocatorCollection):
             for loc, rec in zip(self.locs, records):
                 env.update(rec)
                 collection = loc_cls(**self.info, **env)
-                self.filename = collection.filename
+                print(self.info, env)
+                self._filename_fmt = collection._filename_fmt
                 self.cols.extend(collection.cols)
                 new_locs.extend(collection.locs)
 

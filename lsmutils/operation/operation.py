@@ -60,7 +60,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
     output_types = NotImplemented
     filename_format = '{output_label}'
 
-    end_msg = '{title} saved at {loc}'
+    end_msg = '{title} saved at: \n    {loc}'
     error_msg = '{title} calculation FAILED'
 
     def __init__(self, inpt, out, dims=[]):
@@ -85,14 +85,17 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         self.log_level = cfg['log_level']
         self.case_id = cfg['case_id']
         self.base_dir = cfg['base_dir']
+        if 'nprocesses' in cfg:
+            self.nprocesses = cfg['nprocesses']
+        else:
+            self.nprocesses = os.cpu_count()
 
         self.scripts = scripts
 
         # Get non-automatic attributes for filename
         self.attributes = kwargs.copy()
-        self.attributes
         self.attributes.update(
-                {title: getattr(self, title) for title in dir(self)})
+            {title: getattr(self, title) for title in dir(self)})
 
         logging.debug('Formatting %s file names', self.name)
         self.filenames = {
@@ -105,8 +108,8 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         if not self.dims:
             self.locs = {
                 ot.key: Locator.__children__()[ot.loctype](
-                        filename=self.filenames[ot.key],
-                        default_ext=ot.filetype).configure(cfg)
+                    filename=self.filenames[ot.key],
+                    default_ext=ot.filetype).configure(cfg)
                 for ot in self.output_types}
         else:
             env = {}
@@ -115,7 +118,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                 if hasattr(loc, 'env'):
                     env.update(loc.env)
                 if hasattr(loc, 'loc_type'):
-                    if loc.loc_type in ['regex', 'list']:
+                    if loc.loc_type in ['regex', 'list', 'tiles']:
                         env.update({'meta': loc.meta.to_dict('records')})
 
             if 'meta' in env:
@@ -204,8 +207,9 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                         dim_values = loc_dim_values
 
         if not dim_values is None:
+            print(dim_values)
             # Run operation for each combination in parallel
-            pool = multiprocessing.Pool()
+            pool = multiprocessing.Pool(self.nprocesses)
             pool.map(self.run_subset, dim_values.to_dict('records'))
 
         else:
@@ -470,39 +474,24 @@ class FlowDistanceEuclideanOp(FlowDistanceOp):
         return np.sqrt((lon2 - lon1)**2 + (lat2 - lat1)**2)
 
 
-
-
 class Slope(Operation):
     """
-    Compute Slope from Elevation
-
-    This operation REQUIRES a projected coordinate system in the same
-    units as elevation!
+    Compute Slope and Aspect from Elevation
     """
 
-    title = 'Slope'
+    title = 'Slope and Aspect'
     name = 'slope'
-    output_types = [OutputType('slope', 'gtif')]
+    output_types = [
+        OutputType('slope', 'tif'),
+        OutputType('aspect', 'tif')
+    ]
 
     def run(self, elevation_ds):
-        # Take the gradient, normalized by the resolution
-        array = elevation_ds.array.astype(np.float64)
-        array[array==elevation_ds.nodata] = np.nan
-        grad = np.gradient(array, elevation_ds.res.x, elevation_ds.res.y)
+        gdal.DEMProcessing(
+            self.locs['slope'].path, elevation_ds.dataset, 'slope')
+        gdal.DEMProcessing(
+            self.locs['aspect'].path, elevation_ds.dataset, 'aspect')
 
-        # Find the length of the longest path uphill
-        stack = np.dstack(grad)
-        h = np.linalg.norm(stack, axis=2)
-
-        # Compute the angle
-        slope_rad = np.arctan(h)
-
-        # Convert to degrees
-        slope = slope_rad / np.pi * 180.
-        slope[np.isnan(slope)] = elevation_ds.nodata
-
-        slope_ds = GDALDataset(self.locs['slope'], template=elevation_ds)
-        slope_ds.array = slope
 
 
 class SoilDepthOp(Operation):

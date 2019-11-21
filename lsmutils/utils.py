@@ -114,3 +114,9 @@ class BBox(yaml.YAMLObject):
         return (
             self.llc.x <= coord.x <= self.urc.x
             and self.llc.y <= coord.y <= self.urc.y)
+
+    def __str__(self):
+        return 'BBox:\n    x: {xmin}, {xmax}, \n    y: {ymin}, {ymax}'.format(
+            xmin=self.min.x, xmax=self.max.x,
+            ymin=self.min.y, ymax=self.max.y
+        )

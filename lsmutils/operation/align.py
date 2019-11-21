@@ -17,10 +17,18 @@ class ConvertFileType(Operation):
     name = 'convert-filetype'
     output_types = [OutputType('converted', '')]
 
-    def run(self, input_ds, filetype):
+    def run(self, input_ds, filetype, compress=None):
         self.locs['converted'].default_ext = filetype
+        coptions = []
+        if compress:
+            coptions.append('COMPRESS=' + compress)
+        convert_translate_options = gdal.TranslateOptions(
+            format=input_ds.filetypes[filetype],
+            creationOptions=coptions
+        )
         gdal.Translate(self.locs['converted'].path,
                        input_ds.dataset,
+                       options=convert_translate_options,
                        format=input_ds.filetypes[filetype])
 
 
@@ -110,7 +118,6 @@ class GridAlignOp(Operation):
             grid_box = input_ds.gridcorners(
                     grid_res, padding=padding).warp_output_bounds
 
-
         agg_warp_options = gdal.WarpOptions(
             xRes = resolution.x,
             yRes = resolution.y,
@@ -188,13 +195,14 @@ class ReprojectRasterOp(Operation):
 
     title = 'Reproject raster'
     name = 'reproject-raster'
-    output_types = [OutputType('reprojected', 'tif')]
+    output_types = [OutputType('reprojected', '')]
 
     def run(self, input_ds, template_ds=None,
             srs=None, algorithm='bilinear',
-            extent=None):
+            extent=None, format='tif'):
         if template_ds:
             srs = template_ds.srs
+        self.locs['reprojected'].default_ext = format
         agg_warp_options = gdal.WarpOptions(
             dstSRS = srs,
             resampleAlg=algorithm,
@@ -203,6 +211,7 @@ class ReprojectRasterOp(Operation):
             self.locs['reprojected'].path,
             input_ds.dataset,
             options=agg_warp_options)
+
 
 class ReprojectVectorOp(Operation):
 
