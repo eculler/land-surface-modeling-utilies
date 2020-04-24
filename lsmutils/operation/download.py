@@ -1,4 +1,5 @@
 import logging
+from nco import Nco
 import pandas as pd
 import requests
 import shutil
@@ -28,25 +29,26 @@ class DownloadOpenDASOp(Operation):
         self.locs['chunks'].configure(self.cfg)
 
         # Download
+        nco = Nco()
         for i, (start_date, end_date) in enumerate(zip(dates[:-1], dates[1:])):
             info = {'year': start_date.year}
-            download_args = [
-                'ncks', '--mk_rec_dmn', 'time',
-                '-v', ','.join(vars),
-                '-d', ','.join(['time',
-                                start_date.isoformat(),
-                                end_date.isoformat()]),
-                '-d', ','.join(['lon', str(bbox.min.lon), str(bbox.max.lon)]),
-                '-d', ','.join(['lat', str(bbox.min.lat), str(bbox.max.lat)]),
-                ds.loc.url.format(**info),
-                self.locs['chunks'].locs[i].path
-            ]
-            logging.info('Calling process %s', ' '.join(download_args))
-            download_process = subprocess.Popen(
-                download_args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT)
-            download_output, _ = download_process.communicate()
+            print(ds.loc.url.format(**info))
+            print(self.locs['chunks'].locs[i].path)
+            nco.ncks(
+                input = ds.loc.url.format(**info),
+                output = self.locs['chunks'].locs[i].path,
+                options = [
+                    '--mk_rec_dmn time',
+                    '-v ' + ','.join(vars),
+                    '-d ' + ','.join(['time',
+                                      start_date.isoformat(),
+                                      end_date.isoformat()]),
+                    '-d ' + ','.join(['lon', str(bbox.min.lon),
+                                      str(bbox.max.lon)]),
+                    '-d ' + ','.join(['lat', str(bbox.min.lat),
+                                      str(bbox.max.lat)])
+                ]
+            )
 
         # Merge chunks
         cat_args = [

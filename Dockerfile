@@ -13,6 +13,7 @@ RUN unzip /lsmutils/src/taudem.zip
 RUN apt-get update && apt-get install -y build-essential cmake
 RUN apt-get install -y mpich
 RUN apt-get install -y gdal-bin libgdal-dev
+RUN apt-get install -y nco
 
 WORKDIR /lsmutils/src/TauDEM-5.3.8/src/build
 RUN ls ..
@@ -25,17 +26,6 @@ RUN make && make install
 
 # Set up the anaconda environment
 COPY environment.yml /lsmutils
-SHELL ["/bin/bash", "-c"]
 RUN conda env create -f /lsmutils/environment.yml
-RUN echo "source activate myenv" < ~/.bashrc
-ENV PATH /opt/conda/envs/lsmutils/bin:$PATH
-
-# Install LSM Utilities
-WORKDIR /lsmutils/src/lsmutils
-COPY . /lsmutils/src/lsmutils
-RUN /bin/bash -c "source activate lsmutils && pip install -e ."
-
-# Install GDAL (???)
-# RUN conda install gdal
-
-WORKDIR /lsmutils
+RUN conda update --all -n lsmutils
+RUN conda list -n lsmutils

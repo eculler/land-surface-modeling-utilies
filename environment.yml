@@ -2,9 +2,12 @@ name: lsmutils
 channels:
   - conda-forge
 dependencies:
+  - pyyaml>=5.2
   - gdal
   - landlab
   - geos
   - matplotlib
   - metpy
   - geopandas
+  - nco
+  - pynco

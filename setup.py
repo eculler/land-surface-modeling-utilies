@@ -13,7 +13,7 @@ setup(name='lsmutils',
           'lxml',
           'netCDF4',
           'pydap',
-          'pyyaml',
+          'pyyaml>=5.2',
           'requests'
       ],
       include_package_data=True,

@@ -16,7 +16,7 @@ class OperationSequence(yaml.YAMLObject):
     Loads a sequence of GIS operations from a yaml file
     """
 
-    yaml_tag = u'!OpSequence'
+    yaml_tag = '!OpSequence'
 
     def __init__(
             self, operations, name='cfg', title='Configuration File', doc=''):

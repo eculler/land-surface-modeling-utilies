@@ -5,7 +5,7 @@ import yaml
 
 from lsmutils.sequence import run_cfg
 import lsmutils.operation.operation
-import lsmutils.sequence
+from lsmutils.sequence import *
 
 if __name__=='__main__':
 
@@ -15,7 +15,7 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    cfg = yaml.load(open(args.cfg_path, 'r').read(), Loader=yaml.Loader)
+    cfg = yaml.load(open(args.cfg_path, 'r').read())
     logging.basicConfig(stream=sys.stdout, level=cfg['log_level'])
     logging.info('Running configuration file: %s', args.cfg_path)
 
