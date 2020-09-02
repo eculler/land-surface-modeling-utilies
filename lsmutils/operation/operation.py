@@ -1210,7 +1210,7 @@ class DHSVMStationOp(Operation):
 
 
     def run(self, start, end, dt, time_zone,
-            nldas_ds, elevation_ds, projected_epsg, precip_adj):
+            nldas_ds, elevation_ds, projected_epsg, precip_adj=1):
         station_ds = []
 
         time = nldas_ds.dataset.variables['time']
@@ -1220,6 +1220,8 @@ class DHSVMStationOp(Operation):
 
         records = []
         j = 1
+        logging.debug(nldas_ds.dataset[nldas_ds.xdim][:])
+        logging.debug(nldas_ds.dataset[nldas_ds.ydim][:])
         for i, coord in enumerate(nldas_ds.coords):
             x = np.floor(
                 (coord.x - nldas_ds.cmin.x) / nldas_ds.res.x
@@ -1234,15 +1236,21 @@ class DHSVMStationOp(Operation):
             proj_srs.ImportFromEPSG(int(projected_epsg[5:]))
             nldas_to_proj = osr.CoordinateTransformation(
                 nldas_srs, proj_srs)
+
+            # TransformPoint reverses coordinate order
             station_proj = CoordProperty(
                 *nldas_to_proj.TransformPoint(
-                    coord.x, coord.y)[:-1])
-
+                    coord.y, coord.x)[:-1])
+            logging.debug(station_proj.x)
+            logging.debug(station_proj.y)
+            logging.debug(elevation_ds.bbox)
+            logging.debug(elevation_ds.bbox.contains(station_proj))
             if elevation_ds.bbox.contains(station_proj):
                 record = {'i': j,
                           'xi': x, 'yi': y,
                           'x': station_proj.x, 'y': station_proj.y,
                           'elevation': elevation_ds.get_value(station_proj)}
+                logging.debug(record)
                 records.append(record)
                 j += 1
 
@@ -1257,7 +1265,7 @@ class DHSVMStationOp(Operation):
 
         self.locs['station'] = ListLoc(
             template=self.locs['station'],
-            id={'xi': 'xi', 'yi': 'yi'},
+            #id={'xi': 'xi', 'yi': 'yi'},
             meta=records
         ).configure(self.cfg)
 
@@ -1298,7 +1306,7 @@ class DHSVMStationOp(Operation):
                 col = eval(expr)
                 df[name] = eval(expr)
 
-            # mm/hour to m/hour
+            # mm/hour to m/hour, adjusted for calibration
             df['precipitation'] = df['precipitation'] / 1000. * precip_adj
             df['wind_speed'] = np.sqrt(
                 df['wind_speed_u']**2 + df['wind_speed_v']**2 )

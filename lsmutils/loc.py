@@ -107,7 +107,7 @@ class Locator(yaml.YAMLObject, metaclass=LocatorMeta):
 
     def remove_missing(self):
         if not self.exists:
-            raise ValueError('File {} is missing'.format(self.path))
+            logging.warning('File {} is missing'.format(self.path))
 
     @property
     def filename(self):
@@ -268,6 +268,7 @@ class LocatorCollection(Locator):
         if template:
             self.__init__(**template.info, **template.env, **env)
             return
+
         self.env = env
         self.base_dir = ''
 
@@ -456,6 +457,7 @@ class ListLoc(LocatorCollection):
             self.cols = self.meta.columns.tolist()
         else:
             self.meta = pd.DataFrame()
+        self.filename = self._filename_fmt
 
 class MonthlyLoc(LocatorCollection):
 
@@ -478,6 +480,7 @@ class MonthlyLoc(LocatorCollection):
             records.append(record)
             self.locs.append(Locator(**self.info, **record, **env))
         self.meta = pd.DataFrame.from_records(records, index='i')
+        self.filename = self._filename_fmt
 
 class YearlyLoc(LocatorCollection):
 
@@ -498,7 +501,7 @@ class YearlyLoc(LocatorCollection):
             records.append(record)
             self.locs.append(Locator(**self.info, **record, **env))
         self.meta = pd.DataFrame.from_records(records, index='i')
-
+        self.filename = self._filename_fmt
 
 class YearMonthlyLoc(LocatorCollection):
 
@@ -523,7 +526,7 @@ class YearMonthlyLoc(LocatorCollection):
             records.append(record)
             self.locs.append(Locator(**self.info, **record, **env))
         self.meta = pd.DataFrame.from_records(records, index='i')
-
+        self.filename = self._filename_fmt
 
 class DatetimeLoc(LocatorCollection):
 
@@ -535,15 +538,15 @@ class DatetimeLoc(LocatorCollection):
     def expand(self, datetimes, **env):
         self.locs = []
         records = []
-
         for i, dt in enumerate(datetimes):
             record = {
                 'i': i,
                 'datetime': dt
             }
-            records.append(record)
+            records.append(record.copy())
             self.locs.append(Locator(**self.info, **record, **env))
         self.meta = pd.DataFrame.from_records(records, index='i')
+        self.filename = self._filename_fmt
 
 class TileLoc(LocatorCollection):
 
@@ -607,7 +610,7 @@ class LayeredLoc(LocatorCollection):
             records.append(record)
             self.locs.append(Locator(**self.info, **record, **env))
         self.meta = pd.DataFrame.from_records(records, index='i')
-
+        self.filename = self._filename_fmt
 
 class MultipleTypeLoc(LocatorCollection):
 
@@ -627,6 +630,7 @@ class MultipleTypeLoc(LocatorCollection):
             records.append(record)
             self.locs.append(Locator(**self.info, **record, **env))
         self.meta = pd.DataFrame.from_records(records, index='i')
+        self.filename = self._filename_fmt
 
 class RegexLocatorCollection(LocatorCollection):
 

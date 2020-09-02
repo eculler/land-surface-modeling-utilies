@@ -23,6 +23,7 @@ class DownloadOpenDASOp(Operation):
             dates = pd.date_range(start, end, freq=chunk)
         else:
             dates = [start, end]
+        print(self.locs['chunks'].filename)
         self.locs['chunks'] = DatetimeLoc(
             datetimes=dates,
             template=self.locs['chunks'])
@@ -32,8 +33,8 @@ class DownloadOpenDASOp(Operation):
         nco = Nco()
         for i, (start_date, end_date) in enumerate(zip(dates[:-1], dates[1:])):
             info = {'year': start_date.year}
-            print(ds.loc.url.format(**info))
-            print(self.locs['chunks'].locs[i].path)
+            logging.debug(ds.loc.url.format(**info))
+            logging.debug(self.locs['chunks'].locs[i].filename)
             nco.ncks(
                 input = ds.loc.url.format(**info),
                 output = self.locs['chunks'].locs[i].path,
@@ -84,7 +85,6 @@ class DownloadThreddsOp(Operation):
             template=self.locs['chunks'])
         self.locs['chunks'].configure(self.cfg)
 
-        print(dates)
         # Download
         for i, (start_date, end_date) in enumerate(zip(dates[:-1], dates[1:])):
             info = {'year': start_date.year}
@@ -103,12 +103,10 @@ class DownloadThreddsOp(Operation):
             }
             r = requests.get(ds.loc.url.format(**info),
                              params=params, stream=True)
-            print(self.locs['chunks'].locs[i].path)
             with open(self.locs['chunks'].locs[i].path, 'wb') as file:
                 for chunk in r.iter_content(chunk_size=128):
                     file.write(chunk)
 
-            print(r.url)
 
         # Merge chunks
         cat_args = [
