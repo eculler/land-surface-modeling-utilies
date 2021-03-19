@@ -3,18 +3,20 @@ FROM continuumio/miniconda3
 # Working directory
 WORKDIR /lsmutils
 
-# Download and compile TauDEM
-WORKDIR /lsmutils/src
-ARG taudem_url=https://github.com/dtarb/TauDEM/archive/v5.3.8.zip
-RUN apt-get install -y unzip
-RUN wget --no-check-certificate -O /lsmutils/src/taudem.zip $taudem_url
-RUN unzip /lsmutils/src/taudem.zip
-
-RUN apt-get update && apt-get install -y build-essential cmake
+# Install apt packages
+RUN apt-get update && apt-get install -y unzip
+RUN apt-get install -y build-essential cmake
 RUN apt-get install -y mpich
 RUN apt-get install -y gdal-bin libgdal-dev
 RUN apt-get install -y nco
 
+# Download TauDEM
+WORKDIR /lsmutils/src
+ARG taudem_url=https://github.com/dtarb/TauDEM/archive/v5.3.8.zip
+RUN wget --no-check-certificate -O /lsmutils/src/taudem.zip $taudem_url
+RUN unzip /lsmutils/src/taudem.zip
+
+# Compile TauDEM
 WORKDIR /lsmutils/src/TauDEM-5.3.8/src/build
 RUN ls ..
 RUN cmake ..
