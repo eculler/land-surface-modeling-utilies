@@ -1,5 +1,5 @@
-import gdal
 import logging
+from osgeo import gdal
 import pandas as pd
 
 from lsmutils.operation import Operation, OutputType

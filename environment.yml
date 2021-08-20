@@ -4,10 +4,11 @@ channels:
 dependencies:
   - pyyaml>=5.2
   - gdal
-  - landlab
+  - geopandas
   - geos
+  - landlab
   - matplotlib
   - metpy
-  - geopandas
   - nco
   - pynco
+  - python==3.8

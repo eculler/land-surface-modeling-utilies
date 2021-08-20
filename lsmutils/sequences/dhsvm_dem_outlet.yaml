@@ -1,0 +1,63 @@
+!OpSequence
+name: dhsvm-dem-outlet
+title: Crop and reproject DEM to match outlet delineation
+doc:
+operations:
+    - !Operation
+      name: coordinate-to-shapefile
+      in:
+        coordinate: outlet-coord
+      out:
+        shapefile: outlet-latlon
+    - !Operation
+      name: reproject-vector
+      in:
+        input-ds: outlet-latlon
+        srs: projected-srs
+      out:
+        reprojected: outlet
+
+    - !Operation
+      name: merge
+      in:
+        input-ds: dem-all
+      out:
+        merged: dem-full
+    - !Operation
+      name: crop
+      in:
+        input-ds: dem-full
+        bbox: bbox
+      out:
+        cropped: dem-latlon
+    - !Operation
+      name: reproject-raster
+      in:
+        input-ds: dem-latlon
+        srs: projected-srs
+        algorithm: bilinear
+      out:
+        reprojected: dem-proj
+    - !OpSequence
+      name: delineate
+      in:
+        dem: dem-proj
+        outlet: outlet
+      out:
+        boundary-vector: crop-boundary
+    - !Operation
+      name: crop
+      in:
+        input-ds: dem-proj
+        template-ds: crop-boundary
+        padding: !Coord
+          x: 100
+          y: 100
+      out:
+        cropped: dem
+    - !Operation
+      name: dhsvm-dem
+      in:
+        input-ds: dem
+      out:
+        netcdf: dem-nc

@@ -1,8 +1,6 @@
 import copy
-import gdal
 import logging
-import ogr
-import osr
+from osgeo import gdal, ogr, osr
 import pandas as pd
 import re
 import subprocess

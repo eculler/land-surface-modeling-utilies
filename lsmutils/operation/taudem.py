@@ -2,9 +2,8 @@ import copy
 import csv
 import glob
 import numpy as np
-import ogr
 import os
-import osr
+from osgeo import ogr, osr
 import pandas as pd
 import re
 import shutil
