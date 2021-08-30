@@ -166,16 +166,7 @@ class GageWatershedOp(Operation):
     name = 'gage-watershed'
     output_types = [OutputType('gage-watershed', 'tif')]
 
-    def run(self, flow_dir_ds, outlet_ds, srs):
-        # TauDEM does not correctly set srs
-        set_srs = osr.SpatialReference()
-        if not srs.startswith('EPSG:'):
-            raise ValueError('SRS definition must start with "EPSG:"')
-        set_srs.ImportFromEPSG(int(srs[5:]))
-
-        #flow_dir_ds.dataset.SetProjection(set_srs.ExportToWkt())
-        #flow_dir_ds.dataset = None
-
+    def run(self, flow_dir_ds, outlet_ds):
         subprocess.call(['gagewatershed',
                          '-p', flow_dir_ds.loc.path,
                          '-o', outlet_ds.loc.path,

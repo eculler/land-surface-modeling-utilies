@@ -58,6 +58,7 @@ operations:
       in:
         input-ds: dem-proj
         template-ds: crop-boundary
+        ignore-srs: true
         padding: !Coord
           x: 100
           y: 100

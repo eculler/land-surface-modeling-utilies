@@ -138,25 +138,26 @@ class CropOp(Operation):
     def run(self, input_ds,
             template_ds=None, bbox=None,
             padding=CoordProperty(x=0, y=0),
-            algorithm='bilinear'):
+            algorithm='bilinear', ignore_srs=False):
         if template_ds:
             bbox = copy.copy(template_ds.bbox)
             # SRS needs to match for output bounds and input dataset
-            if not template_ds.srs == input_ds.srs:
-                transform = osr.CoordinateTransformation(
-                    template_ds.srs, input_ds.srs)
-                logging.debug('Bounding Box: %s', bbox)
-                logging.debug('Coordinate transformation: %s', transform)
-                logging.debug(template_ds.srs)
-                logging.debug(input_ds.srs)
-                bbox = BBox(
-                    llc = CoordProperty(
-                        *transform.TransformPoint(
-                            bbox.llc.x, bbox.llc.y)[:-1]),
-                    urc = CoordProperty(
-                        *transform.TransformPoint(
-                            bbox.urc.x, bbox.urc.y)[:-1])
-                )
+            if not ignore_srs:
+                if not template_ds.srs == input_ds.srs:
+                    transform = osr.CoordinateTransformation(
+                        template_ds.srs, input_ds.srs)
+                    logging.debug('Bounding Box: %s', bbox)
+                    logging.debug('Coordinate transformation: %s', transform)
+                    logging.debug(template_ds.srs)
+                    logging.debug(input_ds.srs)
+                    bbox = BBox(
+                        llc = CoordProperty(
+                            *transform.TransformPoint(
+                                bbox.llc.x, bbox.llc.y)[:-1]),
+                        urc = CoordProperty(
+                            *transform.TransformPoint(
+                                bbox.urc.x, bbox.urc.y)[:-1])
+                    )
 
 
         grid_box = [

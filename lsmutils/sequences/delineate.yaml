@@ -40,7 +40,6 @@ operations:
     in:
       flow-dir-ds: flow-direction
       outlet-ds: labelled-outlet
-      srs: projected-srs
     out:
       gage-watershed: boundary-raster
 
