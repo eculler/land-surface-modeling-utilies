@@ -1,6 +1,7 @@
 import copy
 import csv
 import glob
+import logging
 import numpy as np
 import os
 from osgeo import ogr, osr
@@ -9,6 +10,7 @@ import re
 import shutil
 import string
 import subprocess
+import sys
 
 from lsmutils.operation import Operation, OutputType
 from lsmutils.dataset import GDALDataset, BoundaryDataset
@@ -22,9 +24,10 @@ class RemoveSinksOp(Operation):
 
     def run(self, input_ds):
         # Remove Pits / Fill sinks
-        subprocess.call(['pitremove',
-                         '-z', input_ds.loc.path,
-                         '-fel', self.locs['no-sinks'].no_ext])
+        proc = subprocess.call(['pitremove',
+                                '-z', input_ds.loc.path,
+                                '-fel', self.locs['no-sinks'].path],
+                               stdout=sys.stdout)
 
 
 class FlowDirectionOp(Operation):
@@ -55,7 +58,7 @@ class SourceAreaOp(Operation):
         subprocess.call([
             'aread8',
             '-p', flow_dir_ds.loc.path,
-            '-ad8', self.locs['source-area'].no_ext,
+            '-ad8', self.locs['source-area'].path,
             '-nc'
         ])
         source_area_ds = GDALDataset(self.locs['source-area'])
@@ -74,7 +77,7 @@ class StreamDefinitionByThresholdOp(Operation):
         subprocess.call(['threshold',
                          '-ssa', source_area_ds.loc.path,
                          '-thresh', '{:.1f}'.format(threshold),
-                         '-src', self.locs['stream-raster'].no_ext])
+                         '-src', self.locs['stream-raster'].path])
 
 
 class MoveOutletsToStreamOp(Operation):
@@ -92,7 +95,8 @@ class MoveOutletsToStreamOp(Operation):
                          '-p', flow_dir_ds.loc.path,
                          '-src', stream_ds.loc.path,
                          '-o', outlet_ds.loc.path,
-                         '-om', self.locs['outlet-on-stream-nosrs'].path])
+                         '-om', self.locs['outlet-on-stream-nosrs'].path,
+                         '-omlyr', 'outlet'])
 
         # Copy spatial reference from original outlet
         in_ds = BoundaryDataset(self.locs['outlet-on-stream-nosrs'])
@@ -162,7 +166,16 @@ class GageWatershedOp(Operation):
     name = 'gage-watershed'
     output_types = [OutputType('gage-watershed', 'tif')]
 
-    def run(self, flow_dir_ds, outlet_ds):
+    def run(self, flow_dir_ds, outlet_ds, srs):
+        # TauDEM does not correctly set srs
+        set_srs = osr.SpatialReference()
+        if not srs.startswith('EPSG:'):
+            raise ValueError('SRS definition must start with "EPSG:"')
+        set_srs.ImportFromEPSG(int(srs[5:]))
+
+        #flow_dir_ds.dataset.SetProjection(set_srs.ExportToWkt())
+        #flow_dir_ds.dataset = None
+
         subprocess.call(['gagewatershed',
                          '-p', flow_dir_ds.loc.path,
                          '-o', outlet_ds.loc.path,

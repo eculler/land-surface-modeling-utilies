@@ -11,12 +11,14 @@ operations:
       no-sinks: no-sinks
       flow-direction: flow-direction
       source-area: source-area
+
   - !Operation
     name: stream-definition-threshold
     in:
       source-area-ds: source-area
     out:
       stream-raster: stream-definition-threshold
+
   - !Operation
     name: snap-outlet
     in:
@@ -25,19 +27,23 @@ operations:
       outlet-ds: outlet
     out:
       outlet-on-stream: outlet-on-stream
+
   - !Operation
     name: label-outlet
     in:
       outlet-ds: outlet-on-stream
     out:
       labelled-outlet: labelled-outlet
+
   - !Operation
     name: gage-watershed
     in:
       flow-dir-ds: flow-direction
       outlet-ds: labelled-outlet
+      srs: projected-srs
     out:
       gage-watershed: boundary-raster
+
   - !Operation
     name: raster-to-shapefile
     in:

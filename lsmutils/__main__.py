@@ -15,7 +15,7 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    cfg = yaml.load(open(args.cfg_path, 'r').read())
+    cfg = yaml.load(open(args.cfg_path, 'r').read(), Loader=yaml.Loader)
     logging.basicConfig(stream=sys.stdout, level=cfg['log_level'])
     logging.info('Running configuration file: %s', args.cfg_path)
 

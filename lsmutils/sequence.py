@@ -42,7 +42,7 @@ class OperationSequence(yaml.YAMLObject):
             seq_name = fields['name'].replace('-', '_') + '.yaml'
             seq_path = '/'.join(['sequences', seq_name])
             seq_def = pkg_resources.resource_string(__name__, seq_path)
-            seq = yaml.load(seq_def)
+            seq = yaml.load(seq_def, Loader=yaml.Loader)
             dims = fields['dims'] if 'dims' in fields else []
             seq.configure(fields['in'], fields['out'], dims)
             return seq
@@ -170,7 +170,7 @@ class OperationSequence(yaml.YAMLObject):
         return case
 
 def run_cfg(cfg):
-    logging.debug('Loaded configuration \n%s', yaml.dump(cfg))
+    #logging.debug('Loaded configuration \n%s', yaml.dump(cfg))
 
     collection = CaseCollection(cfg)
     cases = collection.cases

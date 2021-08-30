@@ -3,6 +3,8 @@ name: dhsvm-dem-outlet
 title: Crop and reproject DEM to match outlet delineation
 doc:
 operations:
+    # Generate outlet shapefile #
+    #############################
     - !Operation
       name: coordinate-to-shapefile
       in:
@@ -17,12 +19,15 @@ operations:
       out:
         reprojected: outlet
 
+    # Generate DEM raster cropped to watershed boundary #
+    #####################################################
     - !Operation
       name: merge
       in:
         input-ds: dem-all
       out:
         merged: dem-full
+
     - !Operation
       name: crop
       in:
@@ -30,6 +35,7 @@ operations:
         bbox: bbox
       out:
         cropped: dem-latlon
+
     - !Operation
       name: reproject-raster
       in:
@@ -38,6 +44,7 @@ operations:
         algorithm: bilinear
       out:
         reprojected: dem-proj
+
     - !OpSequence
       name: delineate
       in:
@@ -45,6 +52,7 @@ operations:
         outlet: outlet
       out:
         boundary-vector: crop-boundary
+
     - !Operation
       name: crop
       in:
@@ -55,6 +63,7 @@ operations:
           y: 100
       out:
         cropped: dem
+
     - !Operation
       name: dhsvm-dem
       in:

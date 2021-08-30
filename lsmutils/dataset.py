@@ -684,13 +684,13 @@ class BoundaryDataset(SpatialDataset):
             self._srs = self.layers[0].GetSpatialRef()
         return self._srs
 
-        @srs.setter
-        def srs(self, new_espg):
-            logging.debug('Trying projection {}'.format(self.espg))
-            srs = osr.SpatialReference()
-            srs.ImportFromEPSG(new_espg)
-            self._dataset.SetProjection(srs.ExportToWkt())
-            self._srs = srs
+    @srs.setter
+    def srs(self, new_epsg):
+        logging.debug('Trying projection {}'.format(self.epsg))
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(new_epsg)
+        self._dataset.SetProjection(srs.ExportToWkt())
+        self._srs = srs
 
     @property
     def layers(self):

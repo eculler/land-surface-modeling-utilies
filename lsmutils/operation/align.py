@@ -78,7 +78,7 @@ class MatchRasterOp(Operation):
 
     title = 'Warp dataset to match a template raster'
     name = 'match-raster'
-    output_types = [OutputType('matched', 'gtif')]
+    output_types = [OutputType('matched', 'ti')]
 
     def run(self, input_ds, template_ds=None, algorithm='bilinear'):
         agg_warp_options = gdal.WarpOptions(
@@ -97,7 +97,7 @@ class GridAlignOp(Operation):
 
     title = 'Align Dataset'
     name = 'grid-align'
-    output_types = [OutputType('aligned', 'gtif')]
+    output_types = [OutputType('aligned', 'ti')]
 
     def run(self, input_ds,
             template_ds=None, bbox=None,
@@ -133,7 +133,7 @@ class CropOp(Operation):
 
     title = 'Crop Raster Dataset'
     name = 'crop'
-    output_types = [OutputType('cropped', 'gtif')]
+    output_types = [OutputType('cropped', 'tif')]
 
     def run(self, input_ds,
             template_ds=None, bbox=None,
@@ -145,6 +145,10 @@ class CropOp(Operation):
             if not template_ds.srs == input_ds.srs:
                 transform = osr.CoordinateTransformation(
                     template_ds.srs, input_ds.srs)
+                logging.debug('Bounding Box: %s', bbox)
+                logging.debug('Coordinate transformation: %s', transform)
+                logging.debug(template_ds.srs)
+                logging.debug(input_ds.srs)
                 bbox = BBox(
                     llc = CoordProperty(
                         *transform.TransformPoint(
@@ -166,17 +170,20 @@ class CropOp(Operation):
             outputBounds = grid_box,
             resampleAlg=algorithm,
         )
-        gdal.Warp(
+
+        gdal.UseExceptions()
+        out = gdal.Warp(
             self.locs['cropped'].path,
             input_ds.dataset,
             options=agg_warp_options)
+        logging.debug('GDAL output: %s', out)
 
 
 class ClipOp(Operation):
 
     title = 'Raster clipped to boundary'
     name = 'clip'
-    output_types = [OutputType('clipped_raster', 'gtif')]
+    output_types = [OutputType('clipped_raster', 'tif')]
 
     def run(self, input_ds, boundary_ds, algorithm='bilinear'):
         clip_warp_options = gdal.WarpOptions(
