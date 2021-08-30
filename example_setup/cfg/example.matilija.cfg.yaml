@@ -1,0 +1,351 @@
+project_id: thomas
+basin_id: matilija
+log_level: !!python/name:logging.DEBUG
+verbose: true
+base_dir: /example.matilija
+temp_dir: tmp
+
+
+in:
+  bbox: &bbox !BBox
+    llc: !Coord
+      lon: -119.75
+      lat: 34.4
+    urc: !Coord
+      lon: -119.25
+      lat: 34.75
+
+  utc-offset: -8
+
+  start: 2012-10-01 00:00:00.00
+
+  end: 2021-06-01 00:00:00.00
+
+  dem-all: !Tiles
+    bbox: *bbox
+    dirname: /example.matilija/data/SRTMv3/hgt
+    filename: '{cardinal_lat}{abs_min_lat:02d}{cardinal_lon}{abs_min_lon:03d}'
+    default_ext: hgt
+
+  dem: !File
+    dirname: /example.matilija/data/gis
+    filename: dem
+    default_ext: gtif
+
+  outlet-coord: !Coord
+    x: -119.3573393
+    y: 34.5027693
+    epsg: 4326
+
+  nlcd-full: !File
+    dirname: !PathSegments
+      segments:
+        - /example.matilija/data
+        - nlcd_2011_landcover_2011_edition_2014_10_10
+    filename: nlcd_2011_landcover_2011_edition_2014_10_10
+    default_ext: img
+
+  nldas: !File
+    dirname: /example.matilija/data/nldas
+    filename: nldas20210625
+    default_ext: nc
+    url: https://hydro1.gesdisc.eosdis.nasa.gov/dods/NLDAS_FORA0125_H.002
+
+  polaris: !Combo
+    dimensions: ['types', 'tiles', 'layers']
+    types:
+      - clay
+      - sand
+      - silt
+    layers: [0, 5, 15, 30]
+    bbox: *bbox
+    dirname: !PathSegments
+      segments:
+        - /example.matilija/data/polaris
+        - '{type}/mean/{layer_min}_{layer_max}'
+    filename: lat{min_lat}{max_lat}_lon{min_lon}{max_lon}
+    default_ext: tif
+    url: !PathSegments
+      segments:
+        - 'http://stream.princeton.edu/POLARIS/PROPERTIES/Sep2018'
+        - '{type}/mean/{layer_min}_{layer_max}'
+        - 'lat{min_lat}{max_lat}_lon{min_lon}{max_lon}.tif'
+
+  prism-full: !MonthlyFile
+    dirname: !PathSegments
+      segments:
+        - /example.matilija/data/
+        - PRISM_ppt_30yr_normal_800mM2_all_bil
+    filename: PRISM_ppt_30yr_normal_800mM2_{month:02d}_bil
+    default_ext: bil
+
+  projected-srs: 'EPSG:6339'
+  soil-min-depth: 1 # m
+  soil-max-depth: 2 # m
+
+scripts:
+  skyview: !File
+    dirname: /example.matilija/scripts/
+    filename: skyview
+    default_ext: ''
+
+  shading: !File
+    dirname: /example.matilija/scripts/dhsvm.setup.scripts
+    filename: shading_maps
+    default_ext: ''
+
+  average: !File
+    dirname: /example.matilija/scripts/dhsvm.setup.scripts
+    filename: average_shadow
+    default_ext: ''
+
+cases:
+  base: !BaseCase {}
+
+sequence: !OpSequence
+  operations:
+
+    # Delineation, network, mask ##
+    ###############################
+    - !OpSequence
+      name: dhsvm-dem-outlet
+      in:
+        outlet-coord: outlet-coord
+        projected-srs: projected-srs
+        dem-all: dem-all
+        bbox: bbox
+      out:
+        dem: dem
+        outlet: outlet
+
+    - !OpSequence
+      name: dhsvm-network
+      in:
+        dem: dem
+        outlet: outlet
+        soil-min-depth: soil-min-depth
+        soil-max-depth: soil-max-depth
+      out:
+        labelled-outlet: labelled-outlet
+        flow-direction: flow-direction
+        soil-depth: soil-depth
+        boundary-raster: boundary-raster
+        boundary-vector: boundary-vector
+        stream-network: stream-network
+        network: network
+        map: map
+        class: class
+        state: network-state
+
+    - !Operation
+      name: dhsvm-mask
+      in:
+        input-ds: boundary-raster
+      out:
+        netcdf: mask-nc
+
+    # Station files  ##
+    ###################
+    # - !Operation
+    #   name: download-opendas
+    #   in:
+    #     ds: nldas
+    #     vars:
+    #       - tmp2m
+    #       - ugrd10m
+    #       - vgrd10m
+    #       - spfh2m
+    #       - pressfc
+    #       - dlwrfsfc
+    #       - dswrfsfc
+    #       - apcpsfc
+    #     bbox: *bbox
+    #     start: start
+    #     end: end
+    #     chunk: '3MS'
+    #   out:
+    #     chunks: nldas-chunks
+    #     data: nldas
+
+    - !Operation
+      name: dhsvm-station
+      in:
+        start: start
+        end: end
+        dt: '1H'
+        time-zone: utc-offset
+        nldas-ds: nldas
+        elevation-ds: dem
+        projected-epsg: projected-srs
+        precip-adj: 1.871198
+      out:
+        station: station
+
+    # Climatology ##
+    ################
+    - !OpSequence
+      name: align
+      dims:
+        - monthly
+      in:
+        input: prism-full
+        template: dem
+        padding: !Coord
+          x: 10
+          y: 10
+        algorithm: bilinear
+      out:
+        matched: prism
+    - !Operation
+      name: dhsvm-prism
+      dims:
+        - monthly
+      in:
+        input-ds: prism
+      out:
+        netcdf: prism-nc
+
+    # Soil and Vegetation ##
+    ########################
+    - !OpSequence
+      name: dhsvm-polaris
+      in:
+        polaris: polaris
+        template: dem
+      out:
+        soil-type-nc: soil-type-nc
+    - !Operation
+      name: dhsvm-soil-depth
+      in:
+        input-ds: soil-depth
+      out:
+        netcdf: soil-depth-nc
+
+    - !OpSequence
+      name: align
+      in:
+        input: nlcd-full
+        template: dem
+        padding: !Coord
+          x: 10000
+          y: 10000
+        algorithm: near
+      out:
+        matched: nlcd
+    - !Operation
+      name: nlcd-to-dhsvm
+      in:
+        nlcd-ds: nlcd
+      out:
+        veg-type: veg-type
+    - !Operation
+      name: dhsvm-veg-type
+      in:
+        input-ds: veg-type
+      out:
+        netcdf: veg-type-nc
+
+    # Shadow and skyview ##
+    #######################
+    - !Operation
+      name: skyview
+      dims:
+        - monthly
+      in:
+        elevation-ds: dem-nc
+        elevation-epsg: projected-srs
+        time_zone: -8
+      out:
+        skyview: skyview
+
+    - !Operation
+      name: shadow
+      dims:
+        - monthly
+      in:
+        elevation-ds: dem-nc
+        elevation-epsg: projected-srs
+        time_zone: -8
+      out:
+        shadow: shadow
+
+    # State files ##
+    ################
+    - !Operation
+      name: dhsvm-interception-state
+      in:
+        template_ds: dem-nc
+      out:
+        netcdf: interception-state
+    - !Operation
+      name: dhsvm-snow-state
+      in:
+        template_ds: dem-nc
+      out:
+        netcdf: snow-state
+    - !Operation
+      name: dhsvm-soil-state
+      in:
+        template_ds: dem-nc
+      out:
+        netcdf: soil-state
+
+
+structure: !CaseDirectoryStructure
+  idstr: dhsvm
+  paths:
+    dhsvm:
+      input:
+        dem-nc: !File
+          filename: dem
+        mask-nc: !File
+          filename: mask
+        prism:
+          prism-nc: !MonthlyFile
+            filename: prism.{month:02d}
+        soil-depth-nc: !File
+          filename: sd
+        solar:
+          shadow: !MonthlyFile
+            filename: Shadow.{month:02d}
+          skyview: !File
+            filename: SkyView
+        station:
+          station: !DataList
+            filename: Station.adj.1-87.{i}
+        stream:
+          network: !File
+            filename: stream.network
+          map: !File
+            filename: stream.map
+          class: !File
+            filename: stream.class
+        veg-type-nc: !File
+          filename: veg
+        soil-type-nc: !File
+          filename: soils
+      state:
+        state.1980.10.01.00.00.00:
+          network-state: !File
+            filename: Channel.State.10.01.1980.00.00.00
+          interception-state: !File
+            filename: Interception.State.10.01.1980.00.00.00
+          snow-state: !File
+            filename: Snow.State.10.01.1980.00.00.00
+          soil-state: !File
+            filename: Soil.State.10.01.1980.00.00.00
+    gis:
+      dem: !File
+        filename: dem
+      boundary-vector: !File
+        filename: boundary
+      outlet: !File
+        filename: outlet
+      stream-network: !File
+        filename: streams
+    downloads2021:
+      nldas: !File
+        filename: nldas
+      chunks:
+        nldas-chunks: !DataList
+          filename: chunk

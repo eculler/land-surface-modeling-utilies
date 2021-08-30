@@ -4,3 +4,6 @@ __pycache__/*
 *egg-info*
 dist/*
 */.#*
+example_setup/tmp/*
+example_setup/dhsvm/*
+ s
