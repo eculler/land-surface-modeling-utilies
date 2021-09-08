@@ -112,6 +112,7 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
         else:
             env = {}
             meta = None
+
             for loc in self.kwargs.values():
                 if hasattr(loc, 'env'):
                     env.update(loc.env)
@@ -119,12 +120,20 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                     if loc.loc_type in ['regex', 'list', 'tiles']:
                         env.update({'meta': loc.meta.to_dict('records')})
 
+            env.update({'dimensions': self.dims.copy()})
+            safe_env = {}
+            for var, val in env.items():
+                try:
+                    safe_env[var] = copy.deepcopy(val)
+                except:
+                    continue
+
             if 'meta' in env:
                 self.locs = {
                     ot.key: ListLoc(
                         filename=self.filenames[ot.key],
                         default_ext=ot.filetype,
-                        **copy.deepcopy(env)
+                        **safe_env
                         ).configure(cfg, file_id=ot.key)
                     for ot in self.output_types
                 }
@@ -132,15 +141,15 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                 for loc in self.locs.values():
                     loc.reduce(self.dims)
             else:
-                env.update({'dimensions': self.dims.copy()})
                 self.locs = {
                     ot.key: ComboLocatorCollection(
                         filename=self.filenames[ot.key],
                         default_ext=ot.filetype,
-                        **copy.deepcopy(env)
-                        ).configure(cfg)
+                        **safe_env
+                        ).configure(cfg, file_id=ot.key)
                     for ot in self.output_types
                 }
+                logging.debug('Locators: %s', self.locs)
 
         # Save files in configured location, not default
         for key, label in self.out.items():
@@ -205,11 +214,12 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
                         dim_values = loc_dim_values
 
         if not dim_values is None:
-            print(dim_values)
+            logging.debug(dim_values)
             # Run operation for each combination in parallel
-            pool = multiprocessing.Pool(self.nprocesses)
-            pool.map(self.run_subset, dim_values.to_dict('records'))
-
+            #pool = multiprocessing.Pool(self.nprocesses)
+            #pool.map(self.run_subset, dim_values.to_dict('records'))
+            for dim_value in dim_values.to_dict('records'):
+                self.run_subset(dim_value)
         else:
             # Run single operation with no dimensions
             kwargs = copy.copy(self.kwargs)
@@ -242,9 +252,11 @@ class Operation(yaml.YAMLObject, metaclass=OperationMeta):
             key: loc.dataset for key, loc in subset_kwargs.items()
             if hasattr(loc, 'dataset')})
 
+        # Run operation on subset
         self.run(**subset_kwargs)
 
         # Restore locators
+        logging.debug(self.full_locs)
         self.locs = copy.copy(self.full_locs)
 
         # Remove datasets from memory

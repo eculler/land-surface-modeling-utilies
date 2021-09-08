@@ -263,7 +263,7 @@ class LocatorCollection(Locator):
     id = NotImplemented
 
     def __init__(self, file_id='', filename='',
-                 dirname='', default_ext='', variable='', url='',
+                 dirname='{temp_dir}', default_ext='', variable='', url='',
                  omit_ext=False, template=None, id={}, **env):
         if template:
             self.__init__(**template.info, **template.env, **env)
@@ -306,11 +306,21 @@ class LocatorCollection(Locator):
         return cls(**fields)
 
     def configure(self, cfg, file_id='', dirname='', dims=[]):
+        # Set base directory
+        if 'base_dir' in cfg:
+            self.base_dir = cfg['base_dir']
+        else:
+            self.base_dir = os.getcwd()
+            
         self.file_id = file_id if file_id else self.file_id
         self.dirname = dirname if dirname else self.dirname
         self.meta[self.file_id] = self.meta.index
+
         for loc in self.locs:
             loc.configure(cfg, file_id, dirname)
+
+        self.env.update(cfg)
+
         return self
 
     def remove_missing(self):
@@ -332,6 +342,7 @@ class LocatorCollection(Locator):
         ds_list = [loc.dataset for loc in self.locs]
         if len(ds_list) == 1:
             return ds_list[0]
+
         meta_iter = self.meta.to_dict('records')
         for ds in ds_list:
             if hasattr(ds, 'meta'):
@@ -359,9 +370,20 @@ class LocatorCollection(Locator):
 
     @Locator.dirname.setter
     def dirname(self, new_dirname):
+        try:
+            self._dirname = new_dirname.format(**self.env)
+
+        except KeyError:
+            self._dirname = ''
+            self._dirname_fmt = new_dirname
+
+        if not os.path.isabs(self._dirname):
+            self._dirname = os.path.join(self.base_dir, self._dirname)
+
         for loc in self.locs:
             loc.dirname = new_dirname
-        self._dirname = new_dirname
+
+        return self._dirname
 
     @property
     def default_ext(self):
@@ -386,7 +408,6 @@ class LocatorCollection(Locator):
 
     def get_subset(self, indices):
         subset = copy.copy(self)
-        print(indices)
         subset.locs = [self.locs[i] for i in indices]
         subset.meta = self.meta.iloc[indices, :]
         return subset

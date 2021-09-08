@@ -78,7 +78,7 @@ class MatchRasterOp(Operation):
 
     title = 'Warp dataset to match a template raster'
     name = 'match-raster'
-    output_types = [OutputType('matched', 'ti')]
+    output_types = [OutputType('matched', 'tif')]
 
     def run(self, input_ds, template_ds=None, algorithm='bilinear'):
         agg_warp_options = gdal.WarpOptions(

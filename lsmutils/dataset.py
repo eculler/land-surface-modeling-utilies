@@ -307,6 +307,7 @@ class NetCDFDataset(SpatialDataset):
 class GDALDataset(SpatialDataset):
 
     filetypes = {
+        'bil': 'EHdr',
         'nc': 'netCDF',
         'asc': 'AAIGrid',
         'gtif': 'GTiff',
